@@ -1833,6 +1833,22 @@ impl Ui {
         }
         self.ensure_layout();
 
+        let focused = if key.modifiers.types_text()
+            && key.text.as_ref().is_some_and(|text| !text.is_empty())
+        {
+            let editable = focused.and_then(|id| with_doc(|d| d.editable_target(id)));
+            if let Some(id) = editable {
+                if Some(id) != focused {
+                    self.set_focus(Some(id));
+                }
+                Some(id)
+            } else {
+                focused
+            }
+        } else {
+            focused
+        };
+
         let focused_edit = focused.filter(|id| with_doc(|d| d.get(*id).is_some_and(Node::is_edit)));
         if let Some(id) = focused_edit
             && self.edit_key(id, &key)
@@ -2278,9 +2294,24 @@ impl Ui {
     }
 
     fn ime(&mut self, update: ImeUpdate) {
-        let Some(id) = with_doc(|d| d.state.focused) else {
+        self.ensure_layout();
+        let Some(focused) = with_doc(|d| d.state.focused) else {
             return;
         };
+        let Some(id) = with_doc(|d| d.editable_target(focused)) else {
+            return;
+        };
+        if id != focused {
+            let starts = update
+                .preedit
+                .as_ref()
+                .is_some_and(|(text, _)| !text.is_empty())
+                || update.commit.as_ref().is_some_and(|text| !text.is_empty());
+            if !starts {
+                return;
+            }
+            self.set_focus(Some(id));
+        }
         if let Some(out) = with_doc(|d| {
             d.get_mut(id)
                 .and_then(Node::editor_mut)
@@ -2332,7 +2363,7 @@ impl Ui {
             if d.dirty.layout || d.dirty.position {
                 return None;
             }
-            let id = d.state.focused?;
+            let id = d.editable_target(d.state.focused?)?;
             let n = d.get(id)?;
             if let Some(e) = n.editor() {
                 if e.read_only {
@@ -2357,8 +2388,8 @@ impl Ui {
                 let focused_edit = with_doc(|d| {
                     d.state
                         .focused
-                        .and_then(|id| d.get(id))
-                        .is_some_and(|n| n.is_edit() || n.is_editor())
+                        .and_then(|id| d.editable_target(id))
+                        .is_some()
                 });
                 if focused_edit {
                     // Wait for the layout to settle before reporting.

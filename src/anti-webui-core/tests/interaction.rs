@@ -251,16 +251,43 @@ fn text_input_editing() {
 #[test]
 fn ime_preedit_and_commit() {
     let field = node_ref();
+    let source = node_ref();
+    let enabled = signal(true);
+    let visible = signal(true);
     let value = signal(String::from("ab"));
     let mut ui = mount(Scale(150), move || {
         div()
             .p(10.0)
-            .child(text_area().w(300.0).node_ref(field).value(value))
+            .child(show(
+                move || visible.get(),
+                move || text_area().w(300.0).node_ref(field).value(value),
+            ))
+            .child(
+                div()
+                    .w(200.0)
+                    .h(40.0)
+                    .focusable()
+                    .node_ref(source)
+                    .text_input_target_when(field, move || enabled.get()),
+            )
     });
     let r = field.rect().unwrap();
     press(&mut ui, at(r, 0.9, 0.2), 0);
     release(&mut ui, at(r, 0.9, 0.2), 5);
     ui.update();
+    source.focus();
+    ui.update();
+    assert!(with_doc(|d| d.state.focused == source.get()));
+    named(&mut ui, NamedKey::ArrowDown, Modifiers::default());
+    assert!(
+        with_doc(|d| d.state.focused == source.get()),
+        "navigation keys stay with the focused list"
+    );
+    ui.handle_event(WindowEvent::Ime(ImeUpdate::default()));
+    assert!(
+        with_doc(|d| d.state.focused == source.get()),
+        "an empty IME update must not move focus"
+    );
     let reqs = ui.take_requests();
     let ime = reqs.iter().rev().find_map(|r| match r {
         PlatformRequest::SetIme(s) => Some(s.clone()),
@@ -276,6 +303,8 @@ fn ime_preedit_and_commit() {
         ..Default::default()
     }));
     ui.update();
+    assert!(with_doc(|d| d.state.focused == field.get()));
+    assert!(field.is_composing());
     // Pre-edit text is shown but not committed to the value.
     assert_eq!(value.get(), "ab");
     let display = with_doc(|d| {
@@ -293,6 +322,7 @@ fn ime_preedit_and_commit() {
     }));
     ui.update();
     assert_eq!(value.get(), "ab日本");
+    assert!(!field.is_composing());
     let reqs = ui.take_requests();
     let ime = reqs
         .iter()
@@ -312,6 +342,29 @@ fn ime_preedit_and_commit() {
     assert!(
         reqs.iter()
             .any(|r| matches!(r, PlatformRequest::SetIme(None)))
+    );
+    source.focus();
+    ui.update();
+    enabled.set(false);
+    ui.update();
+    typ(&mut ui, "x");
+    assert!(with_doc(|d| d.state.focused == source.get()));
+    assert_eq!(value.get(), "ab日本");
+    enabled.set(true);
+    ui.update();
+    typ(&mut ui, "x");
+    assert!(with_doc(|d| d.state.focused == field.get()));
+    assert_eq!(value.get(), "ab日本x");
+    source.focus();
+    ui.update();
+    visible.set(false);
+    ui.update();
+    typ(&mut ui, "z");
+    assert!(with_doc(|d| d.state.focused == source.get()));
+    assert_eq!(
+        value.get(),
+        "ab日本x",
+        "disposed fields cannot receive text"
     );
 }
 

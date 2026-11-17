@@ -71,6 +71,31 @@ impl NodeRef {
         self.0.get_untracked().map(|(id, _)| id)
     }
 
+    pub(crate) fn id_in_current_window(&self) -> Option<NodeId> {
+        if !self.0.is_alive() {
+            return None;
+        }
+        let (id, window) = self.0.get_untracked()?;
+        (window == crate::window::active_id()).then_some(id)
+    }
+
+    /// Whether this editable node currently shows an uncommitted IME composition.
+    /// Intended for event handlers that must leave candidate-navigation keys to the IME.
+    pub fn is_composing(&self) -> bool {
+        if !self.0.is_alive() {
+            return false;
+        }
+        self.in_window(|id| {
+            with_doc(|d| {
+                d.get(id).is_some_and(|node| {
+                    node.edit().is_some_and(|edit| edit.preedit.is_some())
+                        || node.editor().is_some_and(|editor| editor.preedit.is_some())
+                })
+            })
+        })
+        .unwrap_or(false)
+    }
+
     pub(crate) fn bind(&self, id: NodeId) {
         self.0.set(Some((id, crate::window::active_id())));
     }
@@ -488,6 +513,7 @@ pub(crate) struct ElementConfig {
     pub(crate) filter: Option<ImageFn>,
     pub(crate) listeners: Listeners,
     pub(crate) focusable: bool,
+    pub(crate) text_input_target: Option<Box<dyn Fn() -> Option<NodeRef>>>,
     pub(crate) disabled: Option<Box<dyn Fn() -> bool>>,
     pub(crate) node_ref: Vec<NodeRef>,
     pub(crate) access: Vec<crate::access::AccessFn>,
@@ -548,6 +574,17 @@ impl ElementConfig {
                         d.pending_focus = Some(None);
                     }
                     d.mark_style_of(id);
+                });
+            });
+        }
+        if let Some(target) = self.text_input_target {
+            effect(move || {
+                let target = target();
+                with_doc(|d| {
+                    if let Some(node) = d.get_mut(id) {
+                        node.text_input_target = target;
+                    }
+                    d.mark_paint();
                 });
             });
         }
@@ -839,6 +876,24 @@ macro_rules! element_methods {
                 }),
                 None => Rc::new(f),
             });
+            self
+        }
+
+        /// Sends text typed while this node is focused to an editable node in the same window.
+        /// Navigation and command keys keep their normal handlers. The target receives focus on
+        /// the first text or IME composition; hidden, disabled and disposed targets are ignored.
+        pub fn text_input_target(mut self, target: NodeRef) -> Self {
+            self.cfg.text_input_target = Some(Box::new(move || Some(target)));
+            self
+        }
+
+        /// Like [`Self::text_input_target`], enabled by a reactive condition.
+        pub fn text_input_target_when(
+            mut self,
+            target: NodeRef,
+            enabled: impl Fn() -> bool + 'static,
+        ) -> Self {
+            self.cfg.text_input_target = Some(Box::new(move || enabled().then_some(target)));
             self
         }
 

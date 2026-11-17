@@ -81,3 +81,15 @@ Protocol references: [portal parent identifiers](https://flatpak.github.io/xdg-d
 [xdg-foreign-v2](https://wayland.app/protocols/xdg-foreign-unstable-v2),
 [xdg-dialog](https://wayland.app/protocols/xdg-dialog-v1),
 [xdg-activation](https://wayland.app/protocols/xdg-activation-v1).
+
+### Search input delegation
+
+A focusable content surface can use `.text_input_target(search_field)` or
+`.text_input_target_when(search_field, enabled)` to begin editing in an existing
+input when the user types. Navigation and command keys stay on the content
+surface. The target advertises its IME state before composition begins; the first
+printable text or nonempty IME update transfers focus and uses the ordinary editor.
+Only a live, visible, enabled, writable target in the same window is accepted.
+Delegation is one hop and respects modal and fullscreen boundaries.
+`NodeRef::is_composing()` lets an input handler leave candidate navigation to the
+input method.

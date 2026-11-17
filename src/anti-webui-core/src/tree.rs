@@ -206,6 +206,7 @@ pub struct Node {
     pub style: NodeStyle,
     pub listeners: Listeners,
     pub focusable: bool,
+    pub(crate) text_input_target: Option<NodeRef>,
     pub disabled: bool,
     /// Paints the box below its background. See `docs/design/14-shaders.md`.
     pub fill: Option<ShaderPaint>,
@@ -303,6 +304,7 @@ impl Node {
             style: NodeStyle::default(),
             listeners: Listeners::default(),
             focusable: false,
+            text_input_target: None,
             disabled: false,
             fill: None,
             overlay: None,
@@ -990,6 +992,33 @@ impl Document {
         let window = RectI::new(0, 0, self.viewport.width, self.viewport.height);
         // A popup is free to leave the window.
         !rect.is_empty() && (!self.popups.is_empty() || !rect.intersect(&window).is_empty())
+    }
+
+    /// Resolves at most one delegation: a target must itself be editable.
+    pub(crate) fn editable_target(&self, focused: NodeId) -> Option<NodeId> {
+        let source = self.get(focused)?;
+        if !source.visible || source.is_disabled() {
+            return None;
+        }
+        let id = if source.is_edit() || source.is_editor() {
+            focused
+        } else {
+            source.text_input_target?.id_in_current_window()?
+        };
+        let target = self.get(id)?;
+        if !target.visible || target.is_disabled() || self.behind_fullscreen(id) {
+            return None;
+        }
+        let modal = self.popups.iter().rev().copied().find(|id| {
+            self.get(*id)
+                .is_some_and(|node| node.visible && node.popup().is_some_and(|popup| popup.modal))
+        });
+        if modal.is_some_and(|modal| !self.is_ancestor(modal, id)) {
+            return None;
+        }
+        (target.edit().is_some_and(|edit| !edit.read_only)
+            || target.editor().is_some_and(|editor| !editor.read_only))
+        .then_some(id)
     }
 
     pub fn get(&self, id: NodeId) -> Option<&Node> {
