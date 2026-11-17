@@ -6,6 +6,9 @@
 //! other windows of the thread keep theirs here, and switching swaps them in. A thread with one
 //! window never switches.
 
+mod external;
+pub use external::*;
+
 use crate::channel::{UiSender, ui_channel};
 use crate::platform::PlatformRequest;
 use crate::reactive::{Owner, Signal, batch, create_root, on_cleanup, signal};

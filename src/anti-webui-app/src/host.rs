@@ -25,6 +25,8 @@ pub(crate) trait Host {
     fn set_ime(&mut self, ime: Option<ImeState>);
     fn set_clipboard(&mut self, kind: ClipboardKind, text: String);
     fn request_paste(&mut self, kind: ClipboardKind);
+    fn external_window(&mut self, request: anti_webui_core::window::ExternalWindowRequest);
+    fn clipboard(&mut self, request: anti_webui_core::clipboard::ClipboardRequest);
     /// Something another thread can call to wake up the event loop.
     fn waker(&self) -> Option<Arc<dyn Fn() + Send + Sync>>;
     fn set_title(&mut self, title: &str);
@@ -130,6 +132,23 @@ macro_rules! host_for {
             }
             fn request_paste(&mut self, kind: ClipboardKind) {
                 self.request_paste(kind)
+            }
+            fn external_window(&mut self, request: anti_webui_core::window::ExternalWindowRequest) {
+                #[cfg(target_os = "linux")]
+                self.external_window(request);
+                #[cfg(not(target_os = "linux"))]
+                anti_webui_core::window::complete_external(
+                    request.id(),
+                    Err(anti_webui_core::window::WindowIntegrationError::Unsupported),
+                );
+            }
+            fn clipboard(&mut self, request: anti_webui_core::clipboard::ClipboardRequest) {
+                #[cfg(target_os = "linux")]
+                self.clipboard(request);
+                #[cfg(not(target_os = "linux"))]
+                anti_webui_core::clipboard::complete(
+                    request.failed(anti_webui_core::clipboard::ClipboardError::Unsupported),
+                );
             }
             fn waker(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
                 let waker = self.waker()?;

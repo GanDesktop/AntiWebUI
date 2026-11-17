@@ -261,6 +261,11 @@ pub enum DragResult {
 /// Events sent by the platform layer to a window. Coordinates are physical pixels.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WindowEvent {
+    ExternalWindow {
+        id: u64,
+        result: Result<(), crate::window::WindowIntegrationError>,
+    },
+    Clipboard(crate::clipboard::ClipboardReply),
     /// The buffer size or the scale changed.
     Resized {
         size: SizeI,

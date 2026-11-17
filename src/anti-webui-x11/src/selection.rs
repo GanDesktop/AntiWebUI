@@ -3,6 +3,9 @@
 //! doesn't fit in one request.
 
 use crate::state::State;
+use anti_webui_core::clipboard::{
+    ClipboardData, ClipboardError, ClipboardOffer, ClipboardReply, ClipboardRequest,
+};
 use anti_webui_core::event::{ClipboardKind, WindowEvent};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -20,6 +23,7 @@ const PASTE_WAIT: Duration = Duration::from_secs(5);
 /// What we hand out, and since when.
 struct Owned {
     data: Vec<u8>,
+    formats: Vec<(Atom, ClipboardData)>,
     time: u32,
 }
 
@@ -29,6 +33,19 @@ enum Purpose {
     Paste(ClipboardKind),
     /// What was dropped, in this format.
     Drop(String),
+    Formats {
+        id: u64,
+        kind: ClipboardKind,
+        preferences: Vec<String>,
+        max_bytes: usize,
+    },
+    Binary {
+        id: u64,
+        kind: ClipboardKind,
+        formats: Vec<String>,
+        mime: String,
+        max_bytes: usize,
+    },
 }
 
 /// A paste or a drop on its way.
@@ -86,6 +103,10 @@ impl State {
             Purpose::Paste(ClipboardKind::Clipboard) => self.atoms.ANTIWEBUI_SELECTION,
             Purpose::Paste(ClipboardKind::Primary) => self.atoms.ANTIWEBUI_PRIMARY,
             Purpose::Drop(_) => self.atoms.ANTIWEBUI_DROP,
+            Purpose::Formats { kind, .. } | Purpose::Binary { kind, .. } => match kind {
+                ClipboardKind::Clipboard => self.atoms.ANTIWEBUI_SELECTION,
+                ClipboardKind::Primary => self.atoms.ANTIWEBUI_PRIMARY,
+            },
         }
     }
 
@@ -102,6 +123,7 @@ impl State {
             selection,
             Owned {
                 data: text.into_bytes(),
+                formats: Vec::new(),
                 time,
             },
         );
@@ -110,13 +132,124 @@ impl State {
     pub(crate) fn request_paste(&mut self, kind: ClipboardKind) {
         let selection = self.selection_atom(kind);
         if let Some(owned) = self.selections.owned.get(&selection) {
-            let text = String::from_utf8_lossy(&owned.data).into_owned();
+            let data = if owned.formats.is_empty() {
+                Some(owned.data.as_slice())
+            } else {
+                owned
+                    .formats
+                    .iter()
+                    .find(|(a, _)| {
+                        *a == self.atoms.UTF8_STRING
+                            || *a == self.atoms.TEXT_PLAIN_UTF8
+                            || *a == self.atoms.TEXT_PLAIN
+                    })
+                    .map(|(_, d)| d.bytes.as_ref())
+            };
+            let Some(data) = data else {
+                return;
+            };
+            let text = String::from_utf8_lossy(data).into_owned();
             self.events.push(WindowEvent::Paste { kind, text });
             return;
         }
         let target = self.atoms.UTF8_STRING;
         let time = self.last_time;
         self.ask(selection, Purpose::Paste(kind), target, false, time);
+    }
+
+    pub(crate) fn clipboard(&mut self, request: ClipboardRequest) {
+        match request {
+            ClipboardRequest::Write { id, kind, data } => {
+                let result = (|| {
+                    let mut formats = Vec::new();
+                    for d in data {
+                        let atom = self
+                            .conn
+                            .intern_atom(false, d.mime.as_bytes())
+                            .map_err(io)?
+                            .reply()
+                            .map_err(io)?
+                            .atom;
+                        formats.push((atom, d));
+                    }
+                    let selection = self.selection_atom(kind);
+                    let owner = if formats.is_empty() {
+                        NONE
+                    } else {
+                        self.window
+                    };
+                    self.conn
+                        .set_selection_owner(owner, selection, self.last_time)
+                        .map_err(io)?
+                        .check()
+                        .map_err(io)?;
+                    if self
+                        .conn
+                        .get_selection_owner(selection)
+                        .map_err(io)?
+                        .reply()
+                        .map_err(io)?
+                        .owner
+                        != owner
+                    {
+                        return Err(ClipboardError::Unavailable);
+                    }
+                    if formats.is_empty() {
+                        self.selections.owned.remove(&selection);
+                    } else {
+                        self.selections.owned.insert(
+                            selection,
+                            Owned {
+                                data: Vec::new(),
+                                formats,
+                                time: self.last_time,
+                            },
+                        );
+                    }
+                    Ok(())
+                })();
+                self.events
+                    .push(WindowEvent::Clipboard(ClipboardReply::Write { id, result }));
+            }
+            ClipboardRequest::Read {
+                id,
+                kind,
+                formats,
+                max_bytes,
+            } => {
+                let selection = self.selection_atom(kind);
+                if self.selections.pastes.contains_key(&selection) {
+                    self.binary_done(id, Err(ClipboardError::Busy));
+                    return;
+                }
+                self.ask(
+                    selection,
+                    Purpose::Formats {
+                        id,
+                        kind,
+                        preferences: formats,
+                        max_bytes,
+                    },
+                    self.atoms.TARGETS,
+                    false,
+                    self.last_time,
+                );
+            }
+        }
+    }
+
+    fn binary_done(&mut self, id: u64, result: Result<ClipboardOffer, ClipboardError>) {
+        self.events
+            .push(WindowEvent::Clipboard(ClipboardReply::Read { id, result }));
+    }
+
+    fn failed(&mut self, purpose: Purpose, error: ClipboardError) {
+        match purpose {
+            Purpose::Formats { id, .. } | Purpose::Binary { id, .. } => {
+                self.binary_done(id, Err(error))
+            }
+            other => self.deliver(other, Vec::new(), false),
+        }
     }
 
     /// Reads what was dropped, as `target`.
@@ -130,6 +263,9 @@ impl State {
         let _ = self
             .conn
             .convert_selection(self.window, selection, target, property, time);
+        if let Some(old) = self.selections.pastes.remove(&selection) {
+            self.failed(old.purpose, ClipboardError::Busy);
+        }
         self.selections.pastes.insert(
             selection,
             Paste {
@@ -158,7 +294,7 @@ impl State {
             .collect();
         for selection in late {
             if let Some(p) = self.selections.pastes.remove(&selection) {
-                self.deliver(p.purpose, Vec::new(), false);
+                self.failed(p.purpose, ClipboardError::Unavailable);
             }
         }
     }
@@ -175,6 +311,12 @@ impl State {
         let Some(paste) = self.selections.pastes.get(&e.selection) else {
             return;
         };
+        if e.target != paste.target
+            || (e.property != NONE && e.property != self.property_of(&paste.purpose))
+        {
+            return;
+        }
+        let limit = read_limit(&paste.purpose);
         let purpose = paste.purpose.clone();
         if e.property == NONE {
             let retry =
@@ -183,7 +325,7 @@ impl State {
                 self.ask(e.selection, purpose, AtomEnum::STRING.into(), true, e.time);
             } else {
                 self.selections.pastes.remove(&e.selection);
-                self.deliver(purpose, Vec::new(), false);
+                self.failed(purpose, ClipboardError::Unavailable);
             }
             return;
         }
@@ -195,13 +337,18 @@ impl State {
                 e.property,
                 AtomEnum::ANY,
                 0,
-                u32::MAX / 4,
+                property_length(limit),
             )
             .ok()
             .and_then(|c| c.reply().ok())
         else {
             return;
         };
+        if reply.bytes_after > 0 || (reply.type_ != self.atoms.INCR && reply.value.len() > limit) {
+            self.selections.pastes.remove(&e.selection);
+            self.failed(purpose, ClipboardError::TooLarge);
+            return;
+        }
         if reply.type_ == self.atoms.INCR {
             // The rest comes as new values of the property, which deleting it asks for.
             if let Some(p) = self.selections.pastes.get_mut(&e.selection) {
@@ -230,6 +377,85 @@ impl State {
                 };
                 self.events.push(WindowEvent::Paste { kind, text });
             }
+            Purpose::Formats {
+                id,
+                kind,
+                preferences,
+                max_bytes,
+            } => {
+                let atoms: Vec<u32> = bytes
+                    .chunks_exact(4)
+                    .map(|b| u32::from_ne_bytes(b.try_into().expect("four bytes")))
+                    .collect();
+                let mut formats = Vec::new();
+                for a in atoms {
+                    if a == self.atoms.TARGETS || a == self.atoms.TIMESTAMP {
+                        continue;
+                    }
+                    if let Some(name) = self
+                        .conn
+                        .get_atom_name(a)
+                        .ok()
+                        .and_then(|c| c.reply().ok())
+                        .and_then(|r| String::from_utf8(r.name).ok())
+                    {
+                        formats.push(name);
+                    }
+                }
+                let Some(mime) = preferences.iter().find(|m| formats.contains(m)).cloned() else {
+                    self.binary_done(
+                        id,
+                        Ok(ClipboardOffer {
+                            formats,
+                            data: None,
+                        }),
+                    );
+                    return;
+                };
+                let atom = self
+                    .conn
+                    .intern_atom(false, mime.as_bytes())
+                    .ok()
+                    .and_then(|c| c.reply().ok())
+                    .map(|r| r.atom);
+                let Some(atom) = atom else {
+                    self.binary_done(id, Err(ClipboardError::Unavailable));
+                    return;
+                };
+                self.ask(
+                    self.selection_atom(kind),
+                    Purpose::Binary {
+                        id,
+                        kind,
+                        formats,
+                        mime,
+                        max_bytes,
+                    },
+                    atom,
+                    false,
+                    self.last_time,
+                );
+            }
+            Purpose::Binary {
+                id,
+                formats,
+                mime,
+                max_bytes,
+                ..
+            } => {
+                let result = if bytes.len() > max_bytes {
+                    Err(ClipboardError::TooLarge)
+                } else {
+                    Ok(ClipboardOffer {
+                        formats,
+                        data: Some(ClipboardData {
+                            mime,
+                            bytes: bytes.into(),
+                        }),
+                    })
+                };
+                self.binary_done(id, result);
+            }
             Purpose::Drop(mime) => {
                 self.events.push(WindowEvent::DropData { mime, bytes });
                 self.drop_read();
@@ -247,14 +473,29 @@ impl State {
                 .find(|(_, p)| p.incr.is_some() && self.property_of(&p.purpose) == atom)
                 .map(|(&s, _)| s);
             let Some(selection) = incoming else { return };
+            let p = &self.selections.pastes[&selection];
+            let limit = read_limit(&p.purpose).saturating_sub(p.incr.as_ref().map_or(0, Vec::len));
             let Some(reply) = self
                 .conn
-                .get_property(true, self.window, atom, AtomEnum::ANY, 0, u32::MAX / 4)
+                .get_property(
+                    true,
+                    self.window,
+                    atom,
+                    AtomEnum::ANY,
+                    0,
+                    property_length(limit),
+                )
                 .ok()
                 .and_then(|c| c.reply().ok())
             else {
                 return;
             };
+            if reply.bytes_after > 0 || reply.value.len() > limit {
+                if let Some(p) = self.selections.pastes.remove(&selection) {
+                    self.failed(p.purpose, ClipboardError::TooLarge);
+                }
+                return;
+            }
             if reply.value.is_empty() {
                 let bytes = self
                     .selections
@@ -327,7 +568,7 @@ impl State {
         let answered = match owned {
             Some(owned) if e.time == CURRENT_TIME || e.time >= owned.time => {
                 if e.target == a.TARGETS {
-                    let targets = [
+                    let mut targets = vec![
                         a.TARGETS,
                         a.TIMESTAMP,
                         a.UTF8_STRING,
@@ -336,6 +577,10 @@ impl State {
                         u32::from(AtomEnum::STRING),
                         a.TEXT,
                     ];
+                    if !owned.formats.is_empty() {
+                        targets = vec![a.TARGETS, a.TIMESTAMP];
+                        targets.extend(owned.formats.iter().map(|(a, _)| *a));
+                    }
                     self.conn
                         .change_property32(
                             PropMode::REPLACE,
@@ -355,6 +600,16 @@ impl State {
                             &[owned.time],
                         )
                         .is_ok()
+                } else if !owned.formats.is_empty() {
+                    let data = owned
+                        .formats
+                        .iter()
+                        .find(|(a, _)| *a == e.target)
+                        .map(|(_, d)| d.bytes.to_vec());
+                    match data {
+                        Some(data) => self.send(e.requestor, property, e.target, data),
+                        None => false,
+                    }
                 } else if [a.UTF8_STRING, a.TEXT_PLAIN_UTF8, a.TEXT_PLAIN, a.TEXT]
                     .contains(&e.target)
                 {
@@ -464,6 +719,23 @@ impl State {
             .is_some_and(|until| Instant::now() < until)
             || !self.selections.sending.is_empty()
     }
+}
+
+fn io(e: impl std::fmt::Display) -> ClipboardError {
+    ClipboardError::Io(e.to_string())
+}
+fn read_limit(p: &Purpose) -> usize {
+    match p {
+        Purpose::Binary { max_bytes, .. } => *max_bytes,
+        Purpose::Formats { .. } => 256 * 1024,
+        _ => 64 * 1024 * 1024,
+    }
+}
+fn property_length(limit: usize) -> u32 {
+    limit
+        .saturating_add(1)
+        .div_ceil(4)
+        .min(u32::MAX as usize / 4) as u32
 }
 
 /// Whether a `PropertyNotify` says the property went.

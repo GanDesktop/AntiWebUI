@@ -8,6 +8,7 @@ pub mod access;
 pub mod animation;
 pub mod canvas;
 pub mod channel;
+pub mod clipboard;
 #[doc(hidden)]
 pub mod damage;
 pub mod drag;
@@ -54,6 +55,9 @@ pub mod prelude {
         set_timeout,
     };
     pub use crate::channel::{UiSender, UiWork, ui_channel};
+    pub use crate::clipboard::{
+        ClipboardData, ClipboardError, ClipboardOffer, read_clipboard, write_clipboard,
+    };
     pub use crate::drag::{
         DragData, DraggedText, DropEvent, ExternalDrag, GrabEvent, GrabPhase, dragged, start_drag,
     };
@@ -96,6 +100,9 @@ pub mod prelude {
         request_close_window, set_window_maximized, set_window_title, show_window_menu,
         spawn_ui_thread, spawn_window, start_window_move, start_window_resize,
         toggle_window_maximized, window_active, window_decorations, window_maximized,
+    };
+    pub use crate::window::{
+        ExternalParent, WindowIntegrationError, activate_window, set_external_parent,
     };
     pub use anti_webui_style::*;
 }

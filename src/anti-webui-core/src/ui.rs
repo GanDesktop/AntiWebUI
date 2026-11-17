@@ -896,6 +896,10 @@ impl Ui {
             }
             WindowEvent::Ime(update) => self.ime(update),
             WindowEvent::Paste { text, .. } => self.paste(text),
+            WindowEvent::Clipboard(reply) => crate::clipboard::complete(reply),
+            WindowEvent::ExternalWindow { id, result } => {
+                crate::window::complete_external(id, result)
+            }
             WindowEvent::Focused(focused) => {
                 crate::window::tell_active(focused);
                 with_doc(|d| {

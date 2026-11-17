@@ -2,6 +2,9 @@
 
 use crate::keyboard::{Keyboard, Repeat};
 use crate::popup::{Popup, SurfaceFrame};
+use anti_webui_core::clipboard::{
+    ClipboardData, ClipboardError, ClipboardOffer, ClipboardReply, ClipboardRequest,
+};
 use anti_webui_core::event::{
     AXIS_MOTION_GAIN, ClipboardKind, ImeUpdate, PinchPhase, PointerButton, ScrollPhase,
     ScrollSource, WindowEvent,
@@ -89,6 +92,7 @@ pub(crate) enum SurfaceRole {
 }
 
 pub struct State {
+    pub(crate) external: crate::external::External,
     pub qh: QueueHandle<State>,
     pub compositor: wl_compositor::WlCompositor,
     pub wm_base: xdg_wm_base::XdgWmBase,
@@ -166,15 +170,15 @@ pub struct State {
     pub data_device: Option<wl_data_device::WlDataDevice>,
     pub offers: HashMap<wayland_client::backend::ObjectId, Vec<String>>,
     pub selection_offer: Option<wl_data_offer::WlDataOffer>,
-    pub data_source: Option<(wl_data_source::WlDataSource, String)>,
+    pub data_source: Option<(wl_data_source::WlDataSource, Vec<ClipboardData>)>,
     pub primary_device: Option<zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1>,
     pub primary_offers: HashMap<wayland_client::backend::ObjectId, Vec<String>>,
     pub primary_offer: Option<zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1>,
     pub primary_source: Option<(
         zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1,
-        String,
+        Vec<ClipboardData>,
     )>,
-    pub paste_tx: mpsc::Sender<(ClipboardKind, String)>,
+    pub paste_tx: mpsc::Sender<WindowEvent>,
     pub wake: OwnedFd,
     pub(crate) drag: crate::drag::DragState,
 
@@ -194,6 +198,7 @@ pub struct State {
 
 impl Drop for State {
     fn drop(&mut self) {
+        self.detach_external();
         // Not to leave a grab in the way of the other windows, if it goes without closing them.
         self.connection_popups.lock().destroy_all(&self.mailbox);
     }
@@ -208,12 +213,13 @@ impl State {
         surface: wl_surface::WlSurface,
         role: SurfaceRole,
         logical_size: (i32, i32),
-        paste_tx: mpsc::Sender<(ClipboardKind, String)>,
+        paste_tx: mpsc::Sender<WindowEvent>,
         wake: OwnedFd,
         connection_popups: crate::grab::ConnectionPopups,
         mailbox: std::sync::Arc<crate::grab::Mailbox>,
     ) -> Self {
         Self {
+            external: Default::default(),
             qh,
             compositor,
             wm_base,
@@ -516,82 +522,197 @@ impl State {
     }
 
     pub fn set_clipboard(&mut self, kind: ClipboardKind, text: String) {
+        let bytes: std::sync::Arc<[u8]> = text.into_bytes().into();
+        let data = TEXT_MIMES
+            .iter()
+            .map(|m| ClipboardData {
+                mime: (*m).into(),
+                bytes: bytes.clone(),
+            })
+            .collect();
+        let _ = self.offer_clipboard(kind, data);
+    }
+
+    fn offer_clipboard(
+        &mut self,
+        kind: ClipboardKind,
+        data: Vec<ClipboardData>,
+    ) -> Result<(), ClipboardError> {
+        if !self.keyboard_focused || self.input_serial == 0 {
+            return Err(ClipboardError::NotFocused);
+        }
         match kind {
             ClipboardKind::Clipboard => {
                 let (Some(mgr), Some(dev)) = (&self.data_device_manager, &self.data_device) else {
-                    return;
+                    return Err(ClipboardError::Unsupported);
                 };
-                let source = mgr.create_data_source(&self.qh, ());
-                for m in TEXT_MIMES {
-                    source.offer(m.to_owned());
-                }
-                dev.set_selection(Some(&source), self.input_serial);
-                if let Some((old, _)) = self.data_source.replace((source, text)) {
+                if let Some((old, _)) = self.data_source.take() {
                     old.destroy();
                 }
+                if data.is_empty() {
+                    dev.set_selection(None, self.input_serial);
+                    return Ok(());
+                }
+                let source = mgr.create_data_source(&self.qh, ());
+                for item in &data {
+                    source.offer(item.mime.clone());
+                }
+                dev.set_selection(Some(&source), self.input_serial);
+                self.data_source = Some((source, data));
             }
             ClipboardKind::Primary => {
                 let (Some(mgr), Some(dev)) = (&self.primary_manager, &self.primary_device) else {
-                    return;
+                    return Err(ClipboardError::Unsupported);
                 };
-                let source = mgr.create_source(&self.qh, ());
-                for m in TEXT_MIMES {
-                    source.offer(m.to_owned());
-                }
-                dev.set_selection(Some(&source), self.input_serial);
-                if let Some((old, _)) = self.primary_source.replace((source, text)) {
+                if let Some((old, _)) = self.primary_source.take() {
                     old.destroy();
                 }
+                if data.is_empty() {
+                    dev.set_selection(None, self.input_serial);
+                    return Ok(());
+                }
+                let source = mgr.create_source(&self.qh, ());
+                for item in &data {
+                    source.offer(item.mime.clone());
+                }
+                dev.set_selection(Some(&source), self.input_serial);
+                self.primary_source = Some((source, data));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn clipboard(&mut self, conn: &Connection, request: ClipboardRequest) {
+        match request {
+            ClipboardRequest::Write { id, kind, data } => {
+                let result = self.offer_clipboard(kind, data);
+                self.events
+                    .push(WindowEvent::Clipboard(ClipboardReply::Write { id, result }));
+            }
+            ClipboardRequest::Read {
+                id,
+                kind,
+                formats,
+                max_bytes,
+            } => {
+                let tx = self.paste_tx.clone();
+                self.read_selection(conn, kind, formats, max_bytes, move |result| {
+                    let _ = tx.send(WindowEvent::Clipboard(ClipboardReply::Read { id, result }));
+                });
             }
         }
     }
 
-    /// Starts reading the clipboard; the result arrives through the paste channel.
     pub fn request_paste(&mut self, conn: &Connection, kind: ClipboardKind) {
-        let own = match kind {
-            ClipboardKind::Clipboard => self.data_source.as_ref().map(|(_, t)| t.clone()),
-            ClipboardKind::Primary => self.primary_source.as_ref().map(|(_, t)| t.clone()),
-        };
-        if let Some(text) = own {
-            let _ = self.paste_tx.send((kind, text));
-            let _ = rustix::io::write(&self.wake, &[1]);
-            return;
-        }
-        let Ok((read, write)) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC) else {
-            return;
-        };
-        let received = match kind {
-            ClipboardKind::Clipboard => self.selection_offer.as_ref().and_then(|offer| {
-                let mimes = self.offers.get(&offer.id())?;
-                let mime = TEXT_MIMES.iter().find(|m| mimes.iter().any(|x| x == *m))?;
-                offer.receive(mime.to_string(), write.as_fd());
-                Some(())
-            }),
-            ClipboardKind::Primary => self.primary_offer.as_ref().and_then(|offer| {
-                let mimes = self.primary_offers.get(&offer.id())?;
-                let mime = TEXT_MIMES.iter().find(|m| mimes.iter().any(|x| x == *m))?;
-                offer.receive(mime.to_string(), write.as_fd());
-                Some(())
-            }),
-        };
-        if received.is_none() {
-            return;
-        }
-        let _ = conn.flush();
-        drop(write);
         let tx = self.paste_tx.clone();
-        let wake = self.wake.try_clone().ok();
-        std::thread::spawn(move || {
-            use std::io::Read;
-            let mut file = std::fs::File::from(read);
-            let mut buf = Vec::new();
-            if file.read_to_end(&mut buf).is_ok() {
-                let text = String::from_utf8_lossy(&buf).replace("\r\n", "\n");
-                let _ = tx.send((kind, text));
-                if let Some(w) = wake {
-                    let _ = rustix::io::write(&w, &[1]);
+        self.read_selection(
+            conn,
+            kind,
+            TEXT_MIMES.iter().map(|s| (*s).into()).collect(),
+            64 * 1024 * 1024,
+            move |result| {
+                if let Ok(ClipboardOffer {
+                    data: Some(data), ..
+                }) = result
+                {
+                    let text = String::from_utf8_lossy(&data.bytes).replace("\r\n", "\n");
+                    let _ = tx.send(WindowEvent::Paste { kind, text });
                 }
+            },
+        );
+    }
+
+    fn read_selection(
+        &self,
+        conn: &Connection,
+        kind: ClipboardKind,
+        preferences: Vec<String>,
+        max_bytes: usize,
+        done: impl FnOnce(Result<ClipboardOffer, ClipboardError>) + Send + 'static,
+    ) {
+        let wake = self.wake.try_clone().ok();
+        let done = move |result| {
+            done(result);
+            if let Some(wake) = wake {
+                let _ = rustix::io::write(&wake, &[1]);
             }
+        };
+        if !self.keyboard_focused {
+            done(Err(ClipboardError::NotFocused));
+            return;
+        }
+        let own = match kind {
+            ClipboardKind::Clipboard => self.data_source.as_ref().map(|(_, d)| d),
+            ClipboardKind::Primary => self.primary_source.as_ref().map(|(_, d)| d),
+        };
+        if let Some(data) = own {
+            done(anti_webui_core::clipboard::select(
+                data,
+                &preferences,
+                max_bytes,
+            ));
+            return;
+        }
+        let supported = match kind {
+            ClipboardKind::Clipboard => self.data_device.is_some(),
+            ClipboardKind::Primary => self.primary_device.is_some(),
+        };
+        if !supported {
+            done(Err(ClipboardError::Unsupported));
+            return;
+        }
+        let formats = match kind {
+            ClipboardKind::Clipboard => self
+                .selection_offer
+                .as_ref()
+                .and_then(|o| self.offers.get(&o.id())),
+            ClipboardKind::Primary => self
+                .primary_offer
+                .as_ref()
+                .and_then(|o| self.primary_offers.get(&o.id())),
+        }
+        .cloned()
+        .unwrap_or_default();
+        let Some(mime) = preferences.iter().find(|m| formats.contains(m)).cloned() else {
+            done(Ok(ClipboardOffer {
+                formats,
+                data: None,
+            }));
+            return;
+        };
+        let (read, write) = match rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC) {
+            Ok(pipe) => pipe,
+            Err(e) => {
+                done(Err(ClipboardError::Io(e.to_string())));
+                return;
+            }
+        };
+        match kind {
+            ClipboardKind::Clipboard => self
+                .selection_offer
+                .as_ref()
+                .expect("offered MIME has a selection")
+                .receive(mime.clone(), write.as_fd()),
+            ClipboardKind::Primary => self
+                .primary_offer
+                .as_ref()
+                .expect("offered MIME has a selection")
+                .receive(mime.clone(), write.as_fd()),
+        }
+        drop(write);
+        if let Err(e) = conn.flush() {
+            done(Err(ClipboardError::Io(e.to_string())));
+            return;
+        }
+        std::thread::spawn(move || {
+            let result = read_bytes(read, max_bytes).map(|bytes| ClipboardOffer {
+                formats,
+                data: Some(ClipboardData {
+                    mime,
+                    bytes: bytes.into(),
+                }),
+            });
+            done(result);
         });
     }
 
@@ -609,10 +730,48 @@ impl State {
     }
 }
 
-fn write_async(fd: OwnedFd, text: String) {
+fn read_bytes(fd: OwnedFd, max_bytes: usize) -> Result<Vec<u8>, ClipboardError> {
+    use std::io::Read;
+    let mut file = std::fs::File::from(fd);
+    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    let mut bytes = Vec::new();
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(ClipboardError::Unavailable);
+        }
+        let timeout = rustix::event::Timespec {
+            tv_sec: left.as_secs() as _,
+            tv_nsec: left.subsec_nanos() as _,
+        };
+        let mut poll = [rustix::event::PollFd::new(
+            &file,
+            rustix::event::PollFlags::IN,
+        )];
+        match rustix::event::poll(&mut poll, Some(&timeout)) {
+            Ok(0) => return Err(ClipboardError::Unavailable),
+            Ok(_) => {}
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(e) => return Err(ClipboardError::Io(e.to_string())),
+        }
+        let mut chunk = [0u8; 16384];
+        let count = file
+            .read(&mut chunk)
+            .map_err(|e| ClipboardError::Io(e.to_string()))?;
+        if count == 0 {
+            return Ok(bytes);
+        }
+        if count > max_bytes.saturating_sub(bytes.len()) {
+            return Err(ClipboardError::TooLarge);
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+    }
+}
+
+fn write_async(fd: OwnedFd, bytes: std::sync::Arc<[u8]>) {
     std::thread::spawn(move || {
         let mut file = std::fs::File::from(fd);
-        let _ = file.write_all(text.as_bytes());
+        let _ = file.write_all(&bytes);
     });
 }
 
@@ -1322,7 +1481,9 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for State {
                 if let Some((s, text)) = &state.data_source
                     && s == source
                 {
-                    write_async(fd, text.clone());
+                    if let Some(data) = text.iter().find(|d| d.mime == mime_type) {
+                        write_async(fd, data.bytes.clone());
+                    }
                 } else {
                     state.drag_data_wanted(source, &mime_type, fd);
                 }
@@ -1406,11 +1567,13 @@ impl Dispatch<zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1, ()> 
         _: &QueueHandle<Self>,
     ) {
         match event {
-            zwp_primary_selection_source_v1::Event::Send { fd, .. } => {
+            zwp_primary_selection_source_v1::Event::Send { fd, mime_type } => {
                 if let Some((s, text)) = &state.primary_source
                     && s == source
                 {
-                    write_async(fd, text.clone());
+                    if let Some(data) = text.iter().find(|d| d.mime == mime_type) {
+                        write_async(fd, data.bytes.clone());
+                    }
                 }
             }
             zwp_primary_selection_source_v1::Event::Cancelled => {

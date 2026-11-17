@@ -123,6 +123,8 @@ pub struct DragOffer {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlatformRequest {
+    ExternalWindow(crate::window::ExternalWindowRequest),
+    Clipboard(crate::clipboard::ClipboardRequest),
     SetCursor(CursorIcon),
     /// `None` disables the input method.
     SetIme(Option<ImeState>),

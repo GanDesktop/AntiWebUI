@@ -4,6 +4,7 @@
 
 mod decor;
 mod drag;
+mod external;
 mod grab;
 mod keyboard;
 mod layer;
@@ -185,6 +186,14 @@ impl Ctx<'_> {
 
     pub fn set_clipboard(&mut self, kind: ClipboardKind, text: String) {
         self.state.set_clipboard(kind, text);
+    }
+
+    pub fn external_window(&mut self, request: anti_webui_core::window::ExternalWindowRequest) {
+        self.state.external_window(request);
+    }
+
+    pub fn clipboard(&mut self, request: anti_webui_core::clipboard::ClipboardRequest) {
+        self.state.clipboard(self.conn, request);
     }
 
     pub fn request_paste(&mut self, kind: ClipboardKind) {
@@ -503,7 +512,7 @@ struct Instance {
     key: WindowKey,
     queue: wayland_client::EventQueue<State>,
     state: State,
-    paste_rx: mpsc::Receiver<(ClipboardKind, String)>,
+    paste_rx: mpsc::Receiver<WindowEvent>,
     /// The deadline the session slept until; asking again now would give the one after it.
     timer_deadline: Option<Instant>,
     woken: bool,
@@ -822,6 +831,11 @@ fn open_instance(
         popups,
         mailbox,
     );
+    state.external.importer = globals.bind::<wayland_protocols::xdg::foreign::zv2::client::zxdg_importer_v2::ZxdgImporterV2, _, _>(&qh, 1..=1, ()).ok();
+    state.external.activation = globals.bind::<wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1, _, _>(&qh, 1..=1, ()).ok();
+    state.external.dialogs = globals
+        .bind::<xdg_wm_dialog_v1::XdgWmDialogV1, _, _>(&qh, 1..=1, ())
+        .ok();
     state.outputs = outputs;
     state.apply_input_region();
 
@@ -965,8 +979,8 @@ impl Instance {
                 state.events.push(WindowEvent::Key(ev));
             }
         }
-        while let Ok((kind, text)) = paste_rx.try_recv() {
-            state.events.push(WindowEvent::Paste { kind, text });
+        while let Ok(event) = paste_rx.try_recv() {
+            state.events.push(event);
         }
         state.take_dropped_data();
 

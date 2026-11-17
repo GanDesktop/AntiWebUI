@@ -131,6 +131,8 @@ impl Runner {
                 PlatformRequest::SetIme(state) => ctx.set_ime(state),
                 PlatformRequest::SetClipboard { kind, text } => ctx.set_clipboard(kind, text),
                 PlatformRequest::Paste(kind) => ctx.request_paste(kind),
+                PlatformRequest::Clipboard(request) => ctx.clipboard(request),
+                PlatformRequest::ExternalWindow(request) => ctx.external_window(request),
                 PlatformRequest::SetTitle(t) => ctx.set_title(&t),
                 PlatformRequest::SetFullscreen(on) => ctx.set_fullscreen(on),
                 PlatformRequest::Close => ctx.exit(),

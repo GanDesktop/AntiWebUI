@@ -4,11 +4,14 @@
 
 #![cfg(target_os = "linux")]
 
+use anti_webui_core::clipboard::{ClipboardData, ClipboardError, ClipboardReply, ClipboardRequest};
+use anti_webui_core::event::ClipboardKind;
 use anti_webui_core::event::{
     DragAction, DragActions, DragResult, PinchPhase, PointerButton, WindowEvent,
 };
 use anti_webui_core::geometry::{PointF, PointI, SizeI};
 use anti_webui_core::platform::DragOffer;
+use anti_webui_core::window::{ExternalParent, ExternalWindowRequest};
 use anti_webui_wayland::{Ctx, WaylandHandler, WindowOptions, run};
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
@@ -19,7 +22,13 @@ use wayland_protocols::wp::pointer_gestures::zv1::server::{
     zwp_pointer_gestures_v1,
 };
 use wayland_protocols::xdg::shell::server::{xdg_surface, xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::{
+    activation::v1::server::{xdg_activation_token_v1, xdg_activation_v1},
+    dialog::v1::server::{xdg_dialog_v1, xdg_wm_dialog_v1},
+    foreign::zv2::server::{zxdg_imported_v2, zxdg_importer_v2},
+};
 use wayland_server::protocol::wl_data_device_manager::DndAction;
+use wayland_server::protocol::wl_keyboard;
 use wayland_server::protocol::{
     wl_callback, wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer,
     wl_data_source, wl_pointer, wl_seat, wl_surface,
@@ -31,6 +40,14 @@ use wayland_server::{
 
 #[derive(Default)]
 struct Compositor {
+    keyboard: Option<wl_keyboard::WlKeyboard>,
+    selection: Option<wl_data_source::WlDataSource>,
+    imported: Option<zxdg_imported_v2::ZxdgImportedV2>,
+    foreign_handles: Vec<String>,
+    parented: usize,
+    imports_destroyed: usize,
+    modal: bool,
+    tokens: Vec<String>,
     surfaces: Vec<wl_surface::WlSurface>,
     pointer: Option<wl_pointer::WlPointer>,
     device: Option<wl_data_device::WlDataDevice>,
@@ -76,6 +93,9 @@ macro_rules! global {
 }
 
 global!(
+    zxdg_importer_v2::ZxdgImporterV2,
+    xdg_activation_v1::XdgActivationV1,
+    xdg_wm_dialog_v1::XdgWmDialogV1,
     wl_compositor::WlCompositor,
     xdg_wm_base::XdgWmBase,
     wl_data_device_manager::WlDataDeviceManager,
@@ -92,7 +112,7 @@ impl GlobalDispatch<wl_seat::WlSeat, ()> for Compositor {
         init: &mut DataInit<'_, Self>,
     ) {
         let seat = init.init(resource, ());
-        seat.capabilities(wl_seat::Capability::Pointer);
+        seat.capabilities(wl_seat::Capability::Pointer | wl_seat::Capability::Keyboard);
     }
 }
 
@@ -114,6 +134,8 @@ macro_rules! ignored {
 }
 
 ignored!(
+    wl_keyboard::WlKeyboard,
+    xdg_activation_token_v1::XdgActivationTokenV1,
     xdg_toplevel::XdgToplevel,
     wl_pointer::WlPointer,
     wl_callback::WlCallback,
@@ -226,7 +248,9 @@ impl Dispatch<wl_seat::WlSeat, ()> for Compositor {
         _: &DisplayHandle,
         init: &mut DataInit<'_, Self>,
     ) {
-        if let wl_seat::Request::GetPointer { id } = request {
+        if let wl_seat::Request::GetKeyboard { id } = request {
+            state.keyboard = Some(init.init(id, ()));
+        } else if let wl_seat::Request::GetPointer { id } = request {
             state.pointer = Some(init.init(id, ()));
         }
     }
@@ -287,7 +311,9 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for Compositor {
         _: &DisplayHandle,
         _: &mut DataInit<'_, Self>,
     ) {
-        if let wl_data_device::Request::StartDrag {
+        if let wl_data_device::Request::SetSelection { source, .. } = request {
+            state.selection = source;
+        } else if let wl_data_device::Request::StartDrag {
             source: Some(source),
             origin,
             icon: Some(icon),
@@ -328,6 +354,8 @@ impl Dispatch<wl_data_offer::WlDataOffer, ()> for Compositor {
 }
 
 enum Command {
+    Clipboard(ClipboardRequest),
+    External(ExternalWindowRequest),
     Start(DragOffer),
     Place(SizeI, PointI),
     Accept(Option<(String, DragAction)>),
@@ -357,6 +385,8 @@ impl WaylandHandler for Client_ {
         let _ = self.supports.send(ctx.supports_drag());
         while let Ok(c) = self.commands.try_recv() {
             match c {
+                Command::Clipboard(request) => ctx.clipboard(request),
+                Command::External(request) => ctx.external_window(request),
                 Command::Start(offer) => ctx.start_drag(offer),
                 Command::Place(size, hotspot) => ctx.place_drag_icon(size, hotspot),
                 Command::Accept(wanted) => ctx.accept_drag(wanted),
@@ -466,6 +496,9 @@ fn setup() -> World {
     let socket = ListeningSocket::bind_absolute(path.clone()).unwrap();
     let display = Display::<Compositor>::new().unwrap();
     let dh = display.handle();
+    dh.create_global::<Compositor, zxdg_importer_v2::ZxdgImporterV2, ()>(1, ());
+    dh.create_global::<Compositor, xdg_activation_v1::XdgActivationV1, ()>(1, ());
+    dh.create_global::<Compositor, xdg_wm_dialog_v1::XdgWmDialogV1, ()>(1, ());
     dh.create_global::<Compositor, wl_compositor::WlCompositor, ()>(6, ());
     dh.create_global::<Compositor, xdg_wm_base::XdgWmBase, ()>(6, ());
     dh.create_global::<Compositor, wl_seat::WlSeat, ()>(8, ());
@@ -523,7 +556,7 @@ fn offer_of(mimes: &[&str], actions: DragActions) -> DragOffer {
 }
 
 #[test]
-fn drag_and_drop_goes_by_the_protocol() {
+fn drag_clipboard_and_foreign_windows_go_by_the_protocol() {
     let mut w = setup();
 
     // Everything but `wl_data_device_manager` v3 falls back to staying in the window.
@@ -750,6 +783,7 @@ fn drag_and_drop_goes_by_the_protocol() {
 
     pinching_says_how_much_bigger_it_got(&mut w);
 
+    clipboard_and_external(&mut w);
     w.commands.send(Command::Exit).unwrap();
 }
 
@@ -797,4 +831,309 @@ fn pinching_says_how_much_bigger_it_got(w: &mut World) {
     next(w, PinchPhase::Began, 1.0);
     next(w, PinchPhase::Moved, 2.0);
     next(w, PinchPhase::Cancelled, 1.0);
+}
+
+impl Dispatch<zxdg_importer_v2::ZxdgImporterV2, ()> for Compositor {
+    fn request(
+        state: &mut Self,
+        _: &Client,
+        _: &zxdg_importer_v2::ZxdgImporterV2,
+        req: zxdg_importer_v2::Request,
+        _: &(),
+        _: &DisplayHandle,
+        init: &mut DataInit<'_, Self>,
+    ) {
+        if let zxdg_importer_v2::Request::ImportToplevel { id, handle } = req {
+            state.foreign_handles.push(handle);
+            state.imported = Some(init.init(id, ()));
+        }
+    }
+}
+impl Dispatch<zxdg_imported_v2::ZxdgImportedV2, ()> for Compositor {
+    fn request(
+        state: &mut Self,
+        _: &Client,
+        _: &zxdg_imported_v2::ZxdgImportedV2,
+        req: zxdg_imported_v2::Request,
+        _: &(),
+        _: &DisplayHandle,
+        _: &mut DataInit<'_, Self>,
+    ) {
+        match req {
+            zxdg_imported_v2::Request::SetParentOf { .. } => state.parented += 1,
+            zxdg_imported_v2::Request::Destroy => state.imports_destroyed += 1,
+            _ => {}
+        }
+    }
+}
+impl Dispatch<xdg_activation_v1::XdgActivationV1, ()> for Compositor {
+    fn request(
+        state: &mut Self,
+        _: &Client,
+        _: &xdg_activation_v1::XdgActivationV1,
+        req: xdg_activation_v1::Request,
+        _: &(),
+        _: &DisplayHandle,
+        init: &mut DataInit<'_, Self>,
+    ) {
+        match req {
+            xdg_activation_v1::Request::Activate { token, .. } => state.tokens.push(token),
+            xdg_activation_v1::Request::GetActivationToken { id } => {
+                init.init(id, ());
+            }
+            _ => {}
+        }
+    }
+}
+impl Dispatch<xdg_wm_dialog_v1::XdgWmDialogV1, ()> for Compositor {
+    fn request(
+        _: &mut Self,
+        _: &Client,
+        _: &xdg_wm_dialog_v1::XdgWmDialogV1,
+        req: xdg_wm_dialog_v1::Request,
+        _: &(),
+        _: &DisplayHandle,
+        init: &mut DataInit<'_, Self>,
+    ) {
+        if let xdg_wm_dialog_v1::Request::GetXdgDialog { id, .. } = req {
+            init.init(id, ());
+        }
+    }
+}
+impl Dispatch<xdg_dialog_v1::XdgDialogV1, ()> for Compositor {
+    fn request(
+        state: &mut Self,
+        _: &Client,
+        _: &xdg_dialog_v1::XdgDialogV1,
+        req: xdg_dialog_v1::Request,
+        _: &(),
+        _: &DisplayHandle,
+        _: &mut DataInit<'_, Self>,
+    ) {
+        match req {
+            xdg_dialog_v1::Request::SetModal => state.modal = true,
+            xdg_dialog_v1::Request::UnsetModal | xdg_dialog_v1::Request::Destroy => {
+                state.modal = false
+            }
+            _ => {}
+        }
+    }
+}
+impl World {
+    fn clipboard_reply(&mut self) -> ClipboardReply {
+        let mut got = None;
+        self.until("clipboard reply", |w| {
+            for e in w.events.try_iter() {
+                if let WindowEvent::Clipboard(reply) = e {
+                    got = Some(reply);
+                }
+            }
+            got.is_some()
+        });
+        got.unwrap()
+    }
+    fn external_ok(&mut self) {
+        let mut got = None;
+        self.until("external window reply", |w| {
+            for e in w.events.try_iter() {
+                if let WindowEvent::ExternalWindow { result, .. } = e {
+                    got = Some(result);
+                }
+            }
+            got.is_some()
+        });
+        assert_eq!(got.unwrap(), Ok(()));
+    }
+}
+fn clipboard_and_external(w: &mut World) {
+    let png = ClipboardData {
+        mime: "image/png".into(),
+        bytes: [0, 255, 13, 10, 128].as_slice().into(),
+    };
+    let uri = ClipboardData {
+        mime: "text/uri-list".into(),
+        bytes: b"file:///tmp/a%20b\r\n".as_slice().into(),
+    };
+    let data = vec![png.clone(), uri.clone()];
+    w.commands
+        .send(Command::Clipboard(ClipboardRequest::Write {
+            id: 1,
+            kind: ClipboardKind::Clipboard,
+            data: data.clone(),
+        }))
+        .unwrap();
+    assert!(matches!(
+        w.clipboard_reply(),
+        ClipboardReply::Write {
+            result: Err(ClipboardError::NotFocused),
+            ..
+        }
+    ));
+    w.until("keyboard", |w| w.state.keyboard.is_some());
+    w.state
+        .keyboard
+        .as_ref()
+        .unwrap()
+        .enter(701, &w.state.surfaces[0], vec![]);
+    let mut focused = false;
+    w.until("keyboard focus", |w| {
+        focused |= w
+            .events
+            .try_iter()
+            .any(|e| matches!(e, WindowEvent::Focused(true)));
+        focused
+    });
+    w.commands
+        .send(Command::Clipboard(ClipboardRequest::Write {
+            id: 2,
+            kind: ClipboardKind::Clipboard,
+            data,
+        }))
+        .unwrap();
+    assert!(matches!(
+        w.clipboard_reply(),
+        ClipboardReply::Write { result: Ok(()), .. }
+    ));
+    w.until("selection owner", |w| w.state.selection.is_some());
+    assert_eq!(w.state.source_mimes, ["image/png", "text/uri-list"]);
+    let source = w.state.selection.clone().unwrap();
+    let (read, write) = rustix::pipe::pipe().unwrap();
+    source.send("image/png".into(), write.as_fd());
+    drop(write);
+    w.pump();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        std::fs::File::from(read).read_to_end(&mut bytes).unwrap();
+        tx.send(bytes).unwrap();
+    });
+    let mut received = None;
+    w.until("binary clipboard send", |_| {
+        received = rx.try_recv().ok();
+        received.is_some()
+    });
+    assert_eq!(received.unwrap(), png.bytes.as_ref());
+    // Foreign owner replaces our offer; the old source must no longer be read from cache.
+    source.cancelled();
+    let dh = w.display.handle();
+    let offer = w
+        .client
+        .as_ref()
+        .unwrap()
+        .create_resource::<wl_data_offer::WlDataOffer, (), Compositor>(&dh, 3, ())
+        .unwrap();
+    let device = w.state.device.as_ref().unwrap();
+    device.data_offer(&offer);
+    offer.offer("text/uri-list".into());
+    offer.offer("image/png".into());
+    device.selection(Some(&offer));
+    w.pump();
+    // A focus event after the offer is a deterministic round trip through client dispatch.
+    w.state
+        .keyboard
+        .as_ref()
+        .unwrap()
+        .leave(702, &w.state.surfaces[0]);
+    w.until("focus leave", |w| {
+        w.events
+            .try_iter()
+            .any(|e| matches!(e, WindowEvent::Focused(false)))
+    });
+    w.state
+        .keyboard
+        .as_ref()
+        .unwrap()
+        .enter(703, &w.state.surfaces[0], vec![]);
+    w.until("focus restored", |w| {
+        w.events
+            .try_iter()
+            .any(|e| matches!(e, WindowEvent::Focused(true)))
+    });
+    w.state.received.clear();
+    w.commands
+        .send(Command::Clipboard(ClipboardRequest::Read {
+            id: 3,
+            kind: ClipboardKind::Clipboard,
+            formats: vec!["image/png".into(), "text/uri-list".into()],
+            max_bytes: 5,
+        }))
+        .unwrap();
+    w.until("clipboard receive", |w| !w.state.received.is_empty());
+    let (mime, fd) = w.state.received.pop().unwrap();
+    assert_eq!(mime, "image/png");
+    {
+        let mut f = std::fs::File::from(fd);
+        f.write_all(&png.bytes).unwrap();
+    }
+    let ClipboardReply::Read {
+        result: Ok(offer), ..
+    } = w.clipboard_reply()
+    else {
+        panic!("read failed")
+    };
+    assert_eq!(offer.data, Some(png));
+    w.commands
+        .send(Command::Clipboard(ClipboardRequest::Read {
+            id: 4,
+            kind: ClipboardKind::Clipboard,
+            formats: vec!["image/png".into()],
+            max_bytes: 1,
+        }))
+        .unwrap();
+    w.until("bounded receive", |w| !w.state.received.is_empty());
+    {
+        let (_, fd) = w.state.received.pop().unwrap();
+        std::fs::File::from(fd).write_all(&[1, 2]).unwrap();
+    }
+    assert!(matches!(
+        w.clipboard_reply(),
+        ClipboardReply::Read {
+            result: Err(ClipboardError::TooLarge),
+            ..
+        }
+    ));
+    w.commands
+        .send(Command::External(ExternalWindowRequest::Parent {
+            id: 10,
+            parent: Some(ExternalParent::Wayland("exported-window".into())),
+            modal: true,
+        }))
+        .unwrap();
+    w.external_ok();
+    w.until("foreign parent and modal", |w| {
+        w.state.parented == 1 && w.state.modal
+    });
+    assert_eq!(w.state.foreign_handles, ["exported-window"]);
+    assert_eq!(w.state.imports_destroyed, 0);
+    w.commands
+        .send(Command::External(ExternalWindowRequest::Activate {
+            id: 11,
+            token: "startup-token".into(),
+        }))
+        .unwrap();
+    w.external_ok();
+    w.until("activation", |w| !w.state.tokens.is_empty());
+    assert_eq!(w.state.tokens, ["startup-token"]);
+    w.state.imported.as_ref().unwrap().destroyed();
+    w.until("destroyed parent clears modal", |w| {
+        w.state.imports_destroyed == 1 && !w.state.modal
+    });
+    w.commands
+        .send(Command::External(ExternalWindowRequest::Parent {
+            id: 12,
+            parent: Some(ExternalParent::Wayland("replacement".into())),
+            modal: false,
+        }))
+        .unwrap();
+    w.external_ok();
+    w.until("replacement parent", |w| w.state.parented == 2);
+    w.commands
+        .send(Command::External(ExternalWindowRequest::Parent {
+            id: 13,
+            parent: None,
+            modal: false,
+        }))
+        .unwrap();
+    w.external_ok();
+    w.until("detach", |w| w.state.imports_destroyed == 2);
 }
