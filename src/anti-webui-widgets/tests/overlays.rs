@@ -415,6 +415,33 @@ fn a_submenu_opens_when_the_pointer_rests_on_its_row() {
 }
 
 #[test]
+fn removing_a_hovered_menu_cancels_the_submenu_timer() {
+    let mounted = signal(true);
+    let mut ui = start(move || {
+        column_of(show(
+            move || mounted.get(),
+            move || {
+                dropdown_button(
+                    "File",
+                    vec![submenu("More", vec![menu_item("Inner").into()])],
+                )
+            },
+        ))
+    });
+    click_text(&mut ui, "File");
+    let shown = popups_shown(&mut ui);
+    place(&mut ui, &shown[0]);
+    let _ = ui.paint_frame(Instant::now());
+    let (x, y) = middle_of("More");
+    pointer_at(&mut ui, x, y);
+    assert!(!has_text("Inner"));
+    mounted.set(false);
+    ui.update();
+    wait(&mut ui, 300);
+    assert!(!has_text("More"));
+}
+
+#[test]
 fn a_context_menu_opens_where_it_is_pressed() {
     let log: Rc<Cell<&'static str>> = Rc::default();
     let mut ui = start(move || {

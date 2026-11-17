@@ -278,7 +278,7 @@ impl MenuState {
                 Some(_) => a,
                 None => a.role(Role::MenuItem),
             })
-            .on_hover(move |inside| state.hover(i, inside))
+            .on_hover(self.hover_handler(i))
             .on_click(move |e| {
                 e.stop_propagation();
                 state.activate(i);
@@ -310,7 +310,7 @@ impl MenuState {
             .gap(2);
         el.node_ref(anchor)
             .access(move |a| a.role(Role::MenuItem).expanded(parent.is_open(i)))
-            .on_hover(move |inside| parent.hover(i, inside))
+            .on_hover(self.hover_handler(i))
             .on_click(move |e| {
                 e.stop_propagation();
                 parent.activate(i);
@@ -382,6 +382,19 @@ impl MenuState {
             }
             Some(Row::Submenu) => self.sub_open.set(Some(i)),
             _ => {}
+        }
+    }
+
+    fn hover_handler(&self, i: usize) -> impl Fn(bool) + 'static {
+        let state = *self;
+        let owner = Owner::current();
+        move |inside| {
+            let hover = || state.hover(i, inside);
+            match owner {
+                Some(owner) if owner.is_alive() => owner.with(hover),
+                Some(_) => {}
+                None => hover(),
+            }
         }
     }
 
