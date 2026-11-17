@@ -2103,7 +2103,7 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 [[package]]
 name = "naga"
 version = "30.0.1"
-source = "git+https://github.com/bea4dev/wgpu?branch=adapter-filter#ff143aeeb126dce521b87f47547565c4b6a6da1e"
+source = "git+https://github.com/bea4dev/wgpu?rev=ff143aeeb126dce521b87f47547565c4b6a6da1e#ff143aeeb126dce521b87f47547565c4b6a6da1e"
 dependencies = [
  "arrayvec",
  "bit-set 0.10.0",
@@ -2128,7 +2128,7 @@ dependencies = [
 [[package]]
 name = "naga-types"
 version = "30.0.1"
-source = "git+https://github.com/bea4dev/wgpu?branch=adapter-filter#ff143aeeb126dce521b87f47547565c4b6a6da1e"
+source = "git+https://github.com/bea4dev/wgpu?rev=ff143aeeb126dce521b87f47547565c4b6a6da1e#ff143aeeb126dce521b87f47547565c4b6a6da1e"
 dependencies = [
  "hashbrown 0.17.1",
  "indexmap",
@@ -4099,7 +4099,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 [[package]]
 name = "wgpu"
 version = "30.0.1"
-source = "git+https://github.com/bea4dev/wgpu?branch=adapter-filter#ff143aeeb126dce521b87f47547565c4b6a6da1e"
+source = "git+https://github.com/bea4dev/wgpu?rev=ff143aeeb126dce521b87f47547565c4b6a6da1e#ff143aeeb126dce521b87f47547565c4b6a6da1e"
 dependencies = [
  "arrayvec",
  "bitflags",
@@ -4128,7 +4128,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core"
 version = "30.0.1"
-source = "git+https://github.com/bea4dev/wgpu?branch=adapter-filter#ff143aeeb126dce521b87f47547565c4b6a6da1e"
+source = "git+https://github.com/bea4dev/wgpu?rev=ff143aeeb126dce521b87f47547565c4b6a6da1e#ff143aeeb126dce521b87f47547565c4b6a6da1e"
 dependencies = [
  "arrayvec",
  "bit-set 0.10.0",
@@ -4161,7 +4161,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-apple"
 version = "30.0.1"
-source = "git+https://github.com/bea4dev/wgpu?branch=adapter-filter#ff143aeeb126dce521b87f47547565c4b6a6da1e"
+source = "git+https://github.com/bea4dev/wgpu?rev=ff143aeeb126dce521b87f47547565c4b6a6da1e#ff143aeeb126dce521b87f47547565c4b6a6da1e"
 dependencies = [
  "wgpu-hal",
 ]
@@ -4169,7 +4169,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-emscripten"
 version = "30.0.1"
-source = "git+https://github.com/bea4dev/wgpu?branch=adapter-filter#ff143aeeb126dce521b87f47547565c4b6a6da1e"
+source = "git+https://github.com/bea4dev/wgpu?rev=ff143aeeb126dce521b87f47547565c4b6a6da1e#ff143aeeb126dce521b87f47547565c4b6a6da1e"
 dependencies = [
  "wgpu-hal",
 ]
@@ -4177,7 +4177,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-windows-linux-android"
 version = "30.0.1"
-source = "git+https://github.com/bea4dev/wgpu?branch=adapter-filter#ff143aeeb126dce521b87f47547565c4b6a6da1e"
+source = "git+https://github.com/bea4dev/wgpu?rev=ff143aeeb126dce521b87f47547565c4b6a6da1e#ff143aeeb126dce521b87f47547565c4b6a6da1e"
 dependencies = [
  "wgpu-hal",
 ]
@@ -4185,7 +4185,7 @@ dependencies = [
 [[package]]
 name = "wgpu-hal"
 version = "30.0.1"
-source = "git+https://github.com/bea4dev/wgpu?branch=adapter-filter#ff143aeeb126dce521b87f47547565c4b6a6da1e"
+source = "git+https://github.com/bea4dev/wgpu?rev=ff143aeeb126dce521b87f47547565c4b6a6da1e#ff143aeeb126dce521b87f47547565c4b6a6da1e"
 dependencies = [
  "android_system_properties",
  "arrayvec",
@@ -4240,7 +4240,7 @@ dependencies = [
 [[package]]
 name = "wgpu-naga-bridge"
 version = "30.0.1"
-source = "git+https://github.com/bea4dev/wgpu?branch=adapter-filter#ff143aeeb126dce521b87f47547565c4b6a6da1e"
+source = "git+https://github.com/bea4dev/wgpu?rev=ff143aeeb126dce521b87f47547565c4b6a6da1e#ff143aeeb126dce521b87f47547565c4b6a6da1e"
 dependencies = [
  "naga",
  "wgpu-types",
@@ -4249,7 +4249,7 @@ dependencies = [
 [[package]]
 name = "wgpu-types"
 version = "30.0.1"
-source = "git+https://github.com/bea4dev/wgpu?branch=adapter-filter#ff143aeeb126dce521b87f47547565c4b6a6da1e"
+source = "git+https://github.com/bea4dev/wgpu?rev=ff143aeeb126dce521b87f47547565c4b6a6da1e#ff143aeeb126dce521b87f47547565c4b6a6da1e"
 dependencies = [
  "bitflags",
  "bytemuck",

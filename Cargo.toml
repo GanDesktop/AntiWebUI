@@ -54,8 +54,8 @@ anti-webui-windows = { path = "src/anti-webui-windows", version = "0.1.0" }
 anti-webui-wayland-shell = { path = "src/anti-webui-wayland-shell", version = "0.1.0" }
 anti-webui-symbols-outlined = { path = "src/anti-webui-symbols-outlined", version = "0.1.0" }
 
-wgpu = "30"
-naga = { version = "30", features = ["wgsl-in"] }
+wgpu = { git = "https://github.com/bea4dev/wgpu", rev = "ff143aeeb126dce521b87f47547565c4b6a6da1e" }
+naga = { git = "https://github.com/bea4dev/wgpu", rev = "ff143aeeb126dce521b87f47547565c4b6a6da1e", features = ["wgsl-in"] }
 parley = { version = "0.12", features = ["complex-scripts"] }
 swash = "0.2.10"
 icu_properties = "2"
@@ -99,18 +99,4 @@ dispatch2 = { version = "0.3", default-features = false }
 windows = "0.62"
 windows-core = "0.62"
 
-# wgpu with DX12's `Dx12BackendOptions::adapter_filter`, so that a sleeping dGPU isn't woken at
-# startup, and `PipelineCache`, so that compiled shaders are kept for the next launch (see "起動" in
-# `docs/design/39-platform-windows.md`). Branch `adapter-filter` of the fork, made from v30.0.1;
-# Cargo.lock pins the commit.
-[patch.crates-io]
-naga = { git = "https://github.com/bea4dev/wgpu", branch = "adapter-filter" }
-naga-types = { git = "https://github.com/bea4dev/wgpu", branch = "adapter-filter" }
-wgpu = { git = "https://github.com/bea4dev/wgpu", branch = "adapter-filter" }
-wgpu-core = { git = "https://github.com/bea4dev/wgpu", branch = "adapter-filter" }
-wgpu-core-deps-apple = { git = "https://github.com/bea4dev/wgpu", branch = "adapter-filter" }
-wgpu-core-deps-emscripten = { git = "https://github.com/bea4dev/wgpu", branch = "adapter-filter" }
-wgpu-core-deps-windows-linux-android = { git = "https://github.com/bea4dev/wgpu", branch = "adapter-filter" }
-wgpu-hal = { git = "https://github.com/bea4dev/wgpu", branch = "adapter-filter" }
-wgpu-naga-bridge = { git = "https://github.com/bea4dev/wgpu", branch = "adapter-filter" }
-wgpu-types = { git = "https://github.com/bea4dev/wgpu", branch = "adapter-filter" }
+# Direct Git dependencies above carry the renderer fork into consuming workspaces.
