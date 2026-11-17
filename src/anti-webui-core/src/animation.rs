@@ -3,7 +3,7 @@
 //! `docs/design/13-animation.md`).
 
 use crate::geometry::PointI;
-use crate::reactive::{Signal, batch, on_cleanup, signal};
+use crate::reactive::{Owner, Signal, batch, on_cleanup, signal};
 use crate::tree::{Document, NodeId};
 use anti_webui_style::{AnimatedValue, Color, Style, Transition};
 use std::cell::{Cell, RefCell};
@@ -58,6 +58,7 @@ pub(crate) fn run_frame_callbacks(now: Instant) {
 struct Timer {
     id: u64,
     at: Instant,
+    owner: Option<Owner>,
     f: Box<dyn FnOnce()>,
 }
 
@@ -98,12 +99,13 @@ impl Timeout {
 }
 
 /// Runs `f` once after `delay`, without frames in between. It is cancelled along with the owner it
-/// was set up in.
+/// was set up in. The callback runs in that owner, so work it starts has the same lifetime.
 pub fn set_timeout(delay: Duration, f: impl FnOnce() + 'static) -> Timeout {
     let id = NEXT_TIMER.with(|n| n.replace(n.get() + 1));
     let timer = Timer {
         id,
         at: Instant::now() + delay,
+        owner: Owner::current(),
         f: Box::new(f),
     };
     TIMERS.with(|t| t.borrow_mut().push(timer));
@@ -130,7 +132,12 @@ pub(crate) fn run_timers(now: Instant) {
     due.sort_by_key(|timer| timer.at);
     batch(|| {
         for timer in due {
-            (timer.f)();
+            // An earlier callback may have disposed an owner after this batch was collected.
+            match timer.owner {
+                Some(owner) if owner.is_alive() => owner.with(timer.f),
+                Some(_) => {}
+                None => (timer.f)(),
+            }
         }
     });
 }
@@ -721,6 +728,23 @@ impl Run {
 mod tests {
     use super::*;
     use crate::reactive::create_root;
+
+    #[test]
+    fn due_timers_restore_their_owner_and_skip_disposed_siblings() {
+        let ((), target) = create_root(|| {});
+        let ((), first) = create_root(|| {});
+        first.with(|| {
+            set_timeout(Duration::ZERO, move || {
+                assert_eq!(Owner::current(), Some(first));
+                target.dispose();
+            });
+        });
+        target.with(|| {
+            set_timeout(Duration::ZERO, || panic!("disposed target timer ran"));
+        });
+        run_timers(Instant::now() + Duration::from_millis(1));
+        first.dispose();
+    }
 
     #[test]
     fn reduced_motion_settles_values_and_pauses_clocks_without_pausing_work() {

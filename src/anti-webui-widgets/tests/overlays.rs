@@ -39,6 +39,26 @@ fn a_tooltip_does_not_come_when_the_pointer_left_in_time() {
 }
 
 #[test]
+fn a_pending_tooltip_goes_with_its_target() {
+    let visible = Rc::new(Cell::new(None));
+    let mounted = visible.clone();
+    let mut ui = start(move || {
+        let shown = signal(true);
+        mounted.set(Some(shown));
+        column_of(show(
+            move || shown.get(),
+            || tooltip(button("Target"), "Says this"),
+        ))
+    });
+    let (x, y) = middle_of("Target");
+    pointer_at(&mut ui, x, y);
+    visible.get().unwrap().set(false);
+    ui.update();
+    wait(&mut ui, 600);
+    assert!(!has_text("Says this"));
+}
+
+#[test]
 fn a_tooltip_goes_when_its_target_is_pressed() {
     let mut ui = start(|| column_of(tooltip(button("Target"), "Says this")));
     let (x, y) = middle_of("Target");

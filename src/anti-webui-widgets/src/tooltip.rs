@@ -85,6 +85,7 @@ const FOCUSED: u8 = 4;
 /// What a tooltip's look gets to see, and what it can ask for. Reading it tracks it.
 #[derive(Clone, Copy)]
 pub struct TooltipState {
+    owner: Option<Owner>,
     open: Signal<bool>,
     inside: Signal<u8>,
     hold: Signal<bool>,
@@ -142,8 +143,13 @@ impl TooltipState {
             self.open.set(to);
         } else {
             let open = self.open;
-            self.timer
-                .set(Some(set_timeout(wait, move || open.set(to))));
+            // Pointer callbacks run outside the target's reactive owner.
+            let schedule = || set_timeout(wait, move || open.set(to));
+            let timer = match self.owner {
+                Some(owner) => owner.with(schedule),
+                None => schedule(),
+            };
+            self.timer.set(Some(timer));
         }
     }
 
@@ -229,6 +235,7 @@ where
     F: Fn() -> Div + 'static,
 {
     let state = TooltipState {
+        owner: Owner::current(),
         open: signal(false),
         inside: signal(0),
         hold: signal(false),
