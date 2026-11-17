@@ -56,7 +56,8 @@ pub mod prelude {
     };
     pub use crate::channel::{UiSender, UiWork, ui_channel};
     pub use crate::clipboard::{
-        ClipboardData, ClipboardError, ClipboardOffer, read_clipboard, write_clipboard,
+        ClipboardData, ClipboardError, ClipboardOffer, ClipboardRevision, ClipboardSnapshot,
+        read_clipboard, read_clipboard_formats, write_clipboard, write_clipboard_if_unchanged,
     };
     pub use crate::drag::{
         DragData, DraggedText, DropEvent, ExternalDrag, GrabEvent, GrabPhase, dragged, start_drag,

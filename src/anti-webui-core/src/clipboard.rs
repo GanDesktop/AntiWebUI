@@ -21,6 +21,7 @@ pub enum ClipboardError {
     Unsupported,
     NotFocused,
     Unavailable,
+    Changed,
     TooLarge,
     Io(String),
 }
@@ -42,13 +43,38 @@ pub struct ClipboardOffer {
     pub formats: Vec<String>,
     pub data: Option<ClipboardData>,
 }
+/// Opaque selection identity. Tokens belong to the backend selection that produced them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClipboardRevision(u64);
+impl ClipboardRevision {
+    #[doc(hidden)]
+    pub fn next() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+/// Representations received from one selection, with a token for conditional replacement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClipboardSnapshot {
+    pub formats: Vec<String>,
+    pub entries: Vec<ClipboardData>,
+    pub revision: ClipboardRevision,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[doc(hidden)]
 pub enum ClipboardRequest {
+    Snapshot {
+        id: u64,
+        kind: ClipboardKind,
+        formats: Vec<String>,
+        max_bytes: usize,
+    },
     Write {
         id: u64,
         kind: ClipboardKind,
         data: Vec<ClipboardData>,
+        expected: Option<ClipboardRevision>,
     },
     Read {
         id: u64,
@@ -60,6 +86,10 @@ pub enum ClipboardRequest {
 impl ClipboardRequest {
     pub fn failed(self, error: ClipboardError) -> ClipboardReply {
         match self {
+            Self::Snapshot { id, .. } => ClipboardReply::Snapshot {
+                id,
+                result: Err(error),
+            },
             Self::Write { id, .. } => ClipboardReply::Write {
                 id,
                 result: Err(error),
@@ -74,6 +104,10 @@ impl ClipboardRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[doc(hidden)]
 pub enum ClipboardReply {
+    Snapshot {
+        id: u64,
+        result: Result<ClipboardSnapshot, ClipboardError>,
+    },
     Write {
         id: u64,
         result: Result<(), ClipboardError>,
@@ -83,10 +117,12 @@ pub enum ClipboardReply {
         result: Result<ClipboardOffer, ClipboardError>,
     },
 }
+type Snapshots = HashMap<u64, Completer<Result<ClipboardSnapshot, ClipboardError>>>;
 type Reads = HashMap<u64, Completer<Result<ClipboardOffer, ClipboardError>>>;
 type Writes = HashMap<u64, Completer<Result<(), ClipboardError>>>;
 thread_local! {
     static NEXT: Cell<u64> = const { Cell::new(0) };
+    static SNAPSHOTS: RefCell<Snapshots> = RefCell::default();
     static READS: RefCell<Reads> = RefCell::default();
     static WRITES: RefCell<Writes> = RefCell::default();
 }
@@ -95,6 +131,22 @@ thread_local! {
 pub fn write_clipboard(
     kind: ClipboardKind,
     data: Vec<ClipboardData>,
+) -> Task<Result<(), ClipboardError>> {
+    write(kind, data, None)
+}
+/// Replace a selection only if it is still the one read by the caller.
+/// Returns `Changed` when another clipboard operation has replaced the offer.
+pub fn write_clipboard_if_unchanged(
+    kind: ClipboardKind,
+    data: Vec<ClipboardData>,
+    expected: ClipboardRevision,
+) -> Task<Result<(), ClipboardError>> {
+    write(kind, data, Some(expected))
+}
+fn write(
+    kind: ClipboardKind,
+    data: Vec<ClipboardData>,
+    expected: Option<ClipboardRevision>,
 ) -> Task<Result<(), ClipboardError>> {
     let mut names = std::collections::HashSet::new();
     if data
@@ -116,6 +168,7 @@ pub fn write_clipboard(
             id,
             kind,
             data,
+            expected,
         }))
     });
     task
@@ -143,9 +196,37 @@ pub fn read_clipboard(
     });
     task
 }
+/// Read all available requested MIME representations from one offer.
+/// The combined payload is bounded by `max_bytes`; an empty list only probes formats.
+pub fn read_clipboard_formats(
+    kind: ClipboardKind,
+    formats: Vec<String>,
+    max_bytes: usize,
+) -> Task<Result<ClipboardSnapshot, ClipboardError>> {
+    let id = NEXT.with(|n| n.replace(n.get() + 1));
+    let (task, done) = Task::pending();
+    SNAPSHOTS.with(|reads| reads.borrow_mut().insert(id, done));
+    on_cleanup(move || {
+        SNAPSHOTS.with(|reads| reads.borrow_mut().remove(&id));
+    });
+    with_doc(|d| {
+        d.request(PlatformRequest::Clipboard(ClipboardRequest::Snapshot {
+            id,
+            kind,
+            formats,
+            max_bytes,
+        }))
+    });
+    task
+}
 #[doc(hidden)]
 pub fn complete(reply: ClipboardReply) {
     match reply {
+        ClipboardReply::Snapshot { id, result } => {
+            if let Some(done) = SNAPSHOTS.with(|reads| reads.borrow_mut().remove(&id)) {
+                done.complete(result);
+            }
+        }
         ClipboardReply::Write { id, result } => {
             let done = WRITES.with(|w| w.borrow_mut().remove(&id));
             if let Some(done) = done {

@@ -4,6 +4,7 @@ use crate::keyboard::{Keyboard, Repeat};
 use crate::popup::{Popup, SurfaceFrame};
 use anti_webui_core::clipboard::{
     ClipboardData, ClipboardError, ClipboardOffer, ClipboardReply, ClipboardRequest,
+    ClipboardRevision, ClipboardSnapshot,
 };
 use anti_webui_core::event::{
     AXIS_MOTION_GAIN, ClipboardKind, ImeUpdate, PinchPhase, PointerButton, ScrollPhase,
@@ -169,6 +170,8 @@ pub struct State {
 
     pub data_device: Option<wl_data_device::WlDataDevice>,
     pub offers: HashMap<wayland_client::backend::ObjectId, Vec<String>>,
+    clipboard_revision: ClipboardRevision,
+    primary_revision: ClipboardRevision,
     pub selection_offer: Option<wl_data_offer::WlDataOffer>,
     pub data_source: Option<(wl_data_source::WlDataSource, Vec<ClipboardData>)>,
     pub primary_device: Option<zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1>,
@@ -277,6 +280,8 @@ impl State {
             pending_ime: PendingIme::default(),
             data_device: None,
             offers: HashMap::new(),
+            clipboard_revision: ClipboardRevision::next(),
+            primary_revision: ClipboardRevision::next(),
             selection_offer: None,
             data_source: None,
             primary_device: None,
@@ -546,6 +551,11 @@ impl State {
                 let (Some(mgr), Some(dev)) = (&self.data_device_manager, &self.data_device) else {
                     return Err(ClipboardError::Unsupported);
                 };
+                self.clipboard_revision = ClipboardRevision::next();
+                if let Some(old) = self.selection_offer.take() {
+                    self.offers.remove(&old.id());
+                    old.destroy();
+                }
                 if let Some((old, _)) = self.data_source.take() {
                     old.destroy();
                 }
@@ -564,6 +574,11 @@ impl State {
                 let (Some(mgr), Some(dev)) = (&self.primary_manager, &self.primary_device) else {
                     return Err(ClipboardError::Unsupported);
                 };
+                self.primary_revision = ClipboardRevision::next();
+                if let Some(old) = self.primary_offer.take() {
+                    self.primary_offers.remove(&old.id());
+                    old.destroy();
+                }
                 if let Some((old, _)) = self.primary_source.take() {
                     old.destroy();
                 }
@@ -584,10 +599,40 @@ impl State {
 
     pub fn clipboard(&mut self, conn: &Connection, request: ClipboardRequest) {
         match request {
-            ClipboardRequest::Write { id, kind, data } => {
-                let result = self.offer_clipboard(kind, data);
+            ClipboardRequest::Write {
+                id,
+                kind,
+                data,
+                expected,
+            } => {
+                let result =
+                    if expected.is_some_and(|expected| expected != self.clipboard_revision(kind)) {
+                        Err(ClipboardError::Changed)
+                    } else {
+                        self.offer_clipboard(kind, data)
+                    };
                 self.events
                     .push(WindowEvent::Clipboard(ClipboardReply::Write { id, result }));
+            }
+            ClipboardRequest::Snapshot {
+                id,
+                kind,
+                formats,
+                max_bytes,
+            } => {
+                let tx = self.paste_tx.clone();
+                self.read_formats(
+                    conn,
+                    kind,
+                    ReadFormats::All(formats),
+                    max_bytes,
+                    move |result| {
+                        let _ = tx.send(WindowEvent::Clipboard(ClipboardReply::Snapshot {
+                            id,
+                            result,
+                        }));
+                    },
+                );
             }
             ClipboardRequest::Read {
                 id,
@@ -622,6 +667,12 @@ impl State {
         );
     }
 
+    fn clipboard_revision(&self, kind: ClipboardKind) -> ClipboardRevision {
+        match kind {
+            ClipboardKind::Clipboard => self.clipboard_revision,
+            ClipboardKind::Primary => self.primary_revision,
+        }
+    }
     fn read_selection(
         &self,
         conn: &Connection,
@@ -629,6 +680,27 @@ impl State {
         preferences: Vec<String>,
         max_bytes: usize,
         done: impl FnOnce(Result<ClipboardOffer, ClipboardError>) + Send + 'static,
+    ) {
+        self.read_formats(
+            conn,
+            kind,
+            ReadFormats::Preferred(preferences),
+            max_bytes,
+            move |result| {
+                done(result.map(|snapshot| ClipboardOffer {
+                    formats: snapshot.formats,
+                    data: snapshot.entries.into_iter().next(),
+                }));
+            },
+        );
+    }
+    fn read_formats(
+        &self,
+        conn: &Connection,
+        kind: ClipboardKind,
+        request: ReadFormats,
+        max_bytes: usize,
+        done: impl FnOnce(Result<ClipboardSnapshot, ClipboardError>) + Send + 'static,
     ) {
         let wake = self.wake.try_clone().ok();
         let done = move |result| {
@@ -641,16 +713,36 @@ impl State {
             done(Err(ClipboardError::NotFocused));
             return;
         }
+        let revision = self.clipboard_revision(kind);
         let own = match kind {
-            ClipboardKind::Clipboard => self.data_source.as_ref().map(|(_, d)| d),
-            ClipboardKind::Primary => self.primary_source.as_ref().map(|(_, d)| d),
+            ClipboardKind::Clipboard => self.data_source.as_ref().map(|(_, data)| data),
+            ClipboardKind::Primary => self.primary_source.as_ref().map(|(_, data)| data),
         };
         if let Some(data) = own {
-            done(anti_webui_core::clipboard::select(
-                data,
-                &preferences,
-                max_bytes,
-            ));
+            let formats = data
+                .iter()
+                .map(|item| item.mime.clone())
+                .collect::<Vec<_>>();
+            let wanted = request.select(&formats);
+            let mut remaining = max_bytes;
+            let mut entries = Vec::new();
+            for mime in wanted {
+                let item = data
+                    .iter()
+                    .find(|item| item.mime == mime)
+                    .expect("selected MIME is offered");
+                let Some(left) = remaining.checked_sub(item.bytes.len()) else {
+                    done(Err(ClipboardError::TooLarge));
+                    return;
+                };
+                remaining = left;
+                entries.push(item.clone());
+            }
+            done(Ok(ClipboardSnapshot {
+                formats,
+                entries,
+                revision,
+            }));
             return;
         }
         let supported = match kind {
@@ -665,54 +757,74 @@ impl State {
             ClipboardKind::Clipboard => self
                 .selection_offer
                 .as_ref()
-                .and_then(|o| self.offers.get(&o.id())),
+                .and_then(|offer| self.offers.get(&offer.id())),
             ClipboardKind::Primary => self
                 .primary_offer
                 .as_ref()
-                .and_then(|o| self.primary_offers.get(&o.id())),
+                .and_then(|offer| self.primary_offers.get(&offer.id())),
         }
         .cloned()
         .unwrap_or_default();
-        let Some(mime) = preferences.iter().find(|m| formats.contains(m)).cloned() else {
-            done(Ok(ClipboardOffer {
+        let wanted = request.select(&formats);
+        if wanted.is_empty() {
+            done(Ok(ClipboardSnapshot {
                 formats,
-                data: None,
+                entries: Vec::new(),
+                revision,
             }));
             return;
-        };
-        let (read, write) = match rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC) {
-            Ok(pipe) => pipe,
-            Err(e) => {
-                done(Err(ClipboardError::Io(e.to_string())));
-                return;
-            }
-        };
-        match kind {
-            ClipboardKind::Clipboard => self
-                .selection_offer
-                .as_ref()
-                .expect("offered MIME has a selection")
-                .receive(mime.clone(), write.as_fd()),
-            ClipboardKind::Primary => self
-                .primary_offer
-                .as_ref()
-                .expect("offered MIME has a selection")
-                .receive(mime.clone(), write.as_fd()),
         }
-        drop(write);
-        if let Err(e) = conn.flush() {
-            done(Err(ClipboardError::Io(e.to_string())));
+        let mut reads = Vec::new();
+        for mime in wanted {
+            let (read, write) = match rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC) {
+                Ok(pipe) => pipe,
+                Err(error) => {
+                    done(Err(ClipboardError::Io(error.to_string())));
+                    return;
+                }
+            };
+            match kind {
+                ClipboardKind::Clipboard => self
+                    .selection_offer
+                    .as_ref()
+                    .expect("offered MIME has a selection")
+                    .receive(mime.clone(), write.as_fd()),
+                ClipboardKind::Primary => self
+                    .primary_offer
+                    .as_ref()
+                    .expect("offered MIME has a selection")
+                    .receive(mime.clone(), write.as_fd()),
+            }
+            drop(write);
+            reads.push((mime, read));
+        }
+        if let Err(error) = conn.flush() {
+            done(Err(ClipboardError::Io(error.to_string())));
             return;
         }
         std::thread::spawn(move || {
-            let result = read_bytes(read, max_bytes).map(|bytes| ClipboardOffer {
+            let mut entries = Vec::new();
+            let mut remaining = max_bytes;
+            for (mime, read) in reads {
+                match read_bytes(read, remaining) {
+                    Ok(bytes) => {
+                        remaining -= bytes.len();
+                        entries.push(ClipboardData {
+                            mime,
+                            bytes: bytes.into(),
+                        });
+                    }
+                    Err(error) => {
+                        done(Err(error));
+                        return;
+                    }
+                }
+            }
+            done(Ok(ClipboardSnapshot {
                 formats,
-                data: Some(ClipboardData {
-                    mime,
-                    bytes: bytes.into(),
-                }),
-            });
-            done(result);
+                entries,
+                revision,
+            }));
         });
     }
 
@@ -727,6 +839,29 @@ impl State {
             r.next = now + interval;
         }
         Some(r.keycode)
+    }
+}
+
+enum ReadFormats {
+    Preferred(Vec<String>),
+    All(Vec<String>),
+}
+impl ReadFormats {
+    fn select(self, available: &[String]) -> Vec<String> {
+        let (requested, limit) = match self {
+            Self::Preferred(formats) => (formats, 1),
+            Self::All(formats) => (formats, usize::MAX),
+        };
+        let mut selected = Vec::new();
+        for mime in requested {
+            if available.contains(&mime) && !selected.contains(&mime) {
+                selected.push(mime);
+            }
+            if selected.len() == limit {
+                break;
+            }
+        }
+        selected
     }
 }
 
@@ -1408,6 +1543,7 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for State {
                 state.offers.insert(id.id(), Vec::new());
             }
             wl_data_device::Event::Selection { id } => {
+                state.clipboard_revision = ClipboardRevision::next();
                 if let Some(old) = state.selection_offer.take()
                     && Some(&old) != id.as_ref()
                 {
@@ -1521,6 +1657,7 @@ impl Dispatch<zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1, ()> 
                 state.primary_offers.insert(offer.id(), Vec::new());
             }
             zwp_primary_selection_device_v1::Event::Selection { id } => {
+                state.primary_revision = ClipboardRevision::next();
                 if let Some(old) = state.primary_offer.take()
                     && Some(&old) != id.as_ref()
                 {

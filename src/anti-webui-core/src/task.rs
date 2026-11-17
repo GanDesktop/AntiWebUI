@@ -137,8 +137,16 @@ mod tests {
         let got = Rc::new(Cell::new(0));
         let ((), owner) = create_root(|| {
             let got = got.clone();
+            let owner = crate::reactive::Owner::current();
             let (task, done) = Task::pending();
-            task.then(move |v| got.set(v));
+            task.then(move |v| {
+                assert_eq!(
+                    crate::reactive::Owner::current(),
+                    owner,
+                    "follow-on work inherits its reactive owner"
+                );
+                got.set(v);
+            });
             std::thread::spawn(move || done.complete(7)).join().unwrap();
         });
         assert_eq!(got.get(), 0, "not before the UI thread takes it");

@@ -22,6 +22,14 @@ normalized. No matching format gives `data: None`; transport errors are distinct
 Both APIs return owner-scoped tasks: use `.then(...)` for completion on the UI
 thread. Disposing the reactive owner removes pending callbacks. A read uses a
 snapshot of an offer; a later, separate read may see a different clipboard owner.
+`read_clipboard_formats(kind, formats, max_bytes)` reads every requested available
+representation from the same offer into a `ClipboardSnapshot`. Its `revision` is
+an opaque backend token. `write_clipboard_if_unchanged(kind, data, revision)`
+replaces that selection only while the token remains current; it reports
+`Changed` if another selection has arrived. File managers use this when removing
+completed cut entries, so they cannot clear a newer copy operation. The snapshot
+byte limit applies across all returned representations.
+
 The old `set_clipboard` and text-editing copy/paste APIs remain available.
 
 | Backend | Binary clipboard |

@@ -957,6 +957,7 @@ fn clipboard_and_external(w: &mut World) {
     let data = vec![png.clone(), uri.clone()];
     w.commands
         .send(Command::Clipboard(ClipboardRequest::Write {
+            expected: None,
             id: 1,
             kind: ClipboardKind::Clipboard,
             data: data.clone(),
@@ -985,6 +986,7 @@ fn clipboard_and_external(w: &mut World) {
     });
     w.commands
         .send(Command::Clipboard(ClipboardRequest::Write {
+            expected: None,
             id: 2,
             kind: ClipboardKind::Clipboard,
             data,
@@ -1013,6 +1015,23 @@ fn clipboard_and_external(w: &mut World) {
         received.is_some()
     });
     assert_eq!(received.unwrap(), png.bytes.as_ref());
+    w.commands
+        .send(Command::Clipboard(ClipboardRequest::Snapshot {
+            id: 20,
+            kind: ClipboardKind::Clipboard,
+            formats: vec!["image/png".into(), "text/uri-list".into()],
+            max_bytes: 1024,
+        }))
+        .unwrap();
+    let ClipboardReply::Snapshot {
+        result: Ok(snapshot),
+        ..
+    } = w.clipboard_reply()
+    else {
+        panic!("snapshot failed")
+    };
+    assert_eq!(snapshot.entries, vec![png.clone(), uri.clone()]);
+    let old_revision = snapshot.revision;
     // Foreign owner replaces our offer; the old source must no longer be read from cache.
     source.cancelled();
     let dh = w.display.handle();
@@ -1049,6 +1068,21 @@ fn clipboard_and_external(w: &mut World) {
             .try_iter()
             .any(|e| matches!(e, WindowEvent::Focused(true)))
     });
+    w.commands
+        .send(Command::Clipboard(ClipboardRequest::Write {
+            id: 21,
+            kind: ClipboardKind::Clipboard,
+            data: Vec::new(),
+            expected: Some(old_revision),
+        }))
+        .unwrap();
+    assert!(matches!(
+        w.clipboard_reply(),
+        ClipboardReply::Write {
+            result: Err(ClipboardError::Changed),
+            ..
+        }
+    ));
     w.state.received.clear();
     w.commands
         .send(Command::Clipboard(ClipboardRequest::Read {
@@ -1071,7 +1105,7 @@ fn clipboard_and_external(w: &mut World) {
     else {
         panic!("read failed")
     };
-    assert_eq!(offer.data, Some(png));
+    assert_eq!(offer.data, Some(png.clone()));
     w.commands
         .send(Command::Clipboard(ClipboardRequest::Read {
             id: 4,
@@ -1091,6 +1125,45 @@ fn clipboard_and_external(w: &mut World) {
             result: Err(ClipboardError::TooLarge),
             ..
         }
+    ));
+    w.commands
+        .send(Command::Clipboard(ClipboardRequest::Snapshot {
+            id: 22,
+            kind: ClipboardKind::Clipboard,
+            formats: vec!["image/png".into(), "text/uri-list".into()],
+            max_bytes: 1024,
+        }))
+        .unwrap();
+    w.until("all MIME representations", |w| w.state.received.len() == 2);
+    let (uri_mime, uri_fd) = w.state.received.pop().unwrap();
+    let (png_mime, png_fd) = w.state.received.pop().unwrap();
+    assert_eq!(uri_mime, "text/uri-list");
+    assert_eq!(png_mime, "image/png");
+    {
+        std::fs::File::from(png_fd).write_all(&png.bytes).unwrap();
+    }
+    {
+        std::fs::File::from(uri_fd).write_all(&uri.bytes).unwrap();
+    }
+    let ClipboardReply::Snapshot {
+        result: Ok(snapshot),
+        ..
+    } = w.clipboard_reply()
+    else {
+        panic!("external snapshot failed")
+    };
+    assert_eq!(snapshot.entries, vec![png, uri]);
+    w.commands
+        .send(Command::Clipboard(ClipboardRequest::Write {
+            id: 23,
+            kind: ClipboardKind::Clipboard,
+            data: Vec::new(),
+            expected: Some(snapshot.revision),
+        }))
+        .unwrap();
+    assert!(matches!(
+        w.clipboard_reply(),
+        ClipboardReply::Write { result: Ok(()), .. }
     ));
     w.commands
         .send(Command::External(ExternalWindowRequest::Parent {

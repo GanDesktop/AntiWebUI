@@ -2,7 +2,7 @@
 //! The closure of a [`ui_channel`] runs on the UI thread, in a batch, so it can set signals; the
 //! other threads never see a signal. See `docs/design/05-rendering.md` on why there is one UI thread.
 
-use crate::reactive::on_cleanup;
+use crate::reactive::{Owner, on_cleanup};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -94,9 +94,14 @@ impl Drop for UiWork {
 pub fn ui_channel<T: Send + 'static>(on_message: impl Fn(T) + 'static) -> UiSender<T> {
     let queue = Arc::new(Mutex::new(Vec::new()));
     let id = NEXT_INBOX.with(|n| n.replace(n.get() + 1));
+    let owner = Owner::current();
     let inbox: Rc<dyn Inbox> = Rc::new(Queue {
         queue: queue.clone(),
-        on_message,
+        on_message: move |value| match owner {
+            Some(owner) if owner.is_alive() => owner.with(|| on_message(value)),
+            Some(_) => {}
+            None => on_message(value),
+        },
     });
     let window = crate::window::active_id();
     INBOXES.with(|i| i.borrow_mut().push((id, window, inbox)));
