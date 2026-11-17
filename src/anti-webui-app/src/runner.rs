@@ -524,6 +524,8 @@ struct Spec {
     app_id: String,
     width: i32,
     height: i32,
+    min_size: Option<SizeI>,
+    initial_size_fraction: Option<f32>,
     fullscreen: bool,
     decorations: DecorationMode,
     modal: bool,
@@ -542,6 +544,8 @@ impl Spec {
             app_id: app_id.to_owned(),
             width: o.width,
             height: o.height,
+            min_size: o.min_size,
+            initial_size_fraction: o.initial_size_fraction,
             fullscreen: o.fullscreen,
             decorations: o.decorations,
             modal: o.modal,
@@ -636,6 +640,24 @@ impl<K: Copy + Eq> Windows<K> {
 
 /// Implements [`Platform`] for a backend's session, which has methods of these names.
 macro_rules! platform_for {
+    (@options wayland, $spec:ident, $parent:ident) => {
+        platform_for!(@options_common wayland, $spec, $parent,
+            min_size: $spec.min_size,
+            initial_size_fraction: $spec.initial_size_fraction,
+        )
+    };
+    (@options $backend:ident, $spec:ident, $parent:ident) => {
+        platform_for!(@options_common $backend, $spec, $parent,)
+    };
+    (@options_common $backend:ident, $spec:ident, $parent:ident, $($extra:tt)*) => {
+        $backend::WindowOptions {
+            title: $spec.title, app_id: $spec.app_id,
+            width: $spec.width, height: $spec.height,
+            fullscreen: $spec.fullscreen, decorations: $spec.decorations,
+            modal: $spec.modal, parent: $parent, layer: $spec.layer, lock: $spec.lock,
+            $($extra)*
+        }
+    };
     (@idle macos, $session:expr, $timeout:expr) => {
         $session.idle($timeout)
     };
@@ -681,18 +703,7 @@ macro_rules! platform_for {
                     #[allow(unreachable_patterns)]
                     _ => unreachable!("one backend per program"),
                 });
-                let options = $backend::WindowOptions {
-                    title: spec.title,
-                    app_id: spec.app_id,
-                    width: spec.width,
-                    height: spec.height,
-                    fullscreen: spec.fullscreen,
-                    decorations: spec.decorations,
-                    modal: spec.modal,
-                    parent,
-                    layer: spec.layer,
-                    lock: spec.lock,
-                };
+                let options = platform_for!(@options $backend, spec, parent);
                 Ok($backend::Session::open(self, options)?)
             }
             fn link(&self, key: Self::Key) -> Option<Link> {
@@ -1028,6 +1039,8 @@ fn run_on<P: Platform, V: IntoView>(app: App, root: impl FnOnce() -> V) -> Resul
         app_id: app.app_id,
         width: app.width,
         height: app.height,
+        min_size: None,
+        initial_size_fraction: None,
         fullscreen: app.fullscreen,
         decorations: app.decorations,
         modal: false,

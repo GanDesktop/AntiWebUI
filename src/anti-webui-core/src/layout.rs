@@ -1900,7 +1900,7 @@ impl Engine<'_> {
                 };
                 match avail_w {
                     // What doesn't wrap is as wide as it is, and sticks out if it has to.
-                    Some(a) if a < max && wraps => {
+                    Some(a) if a < max && (wraps || data.overflow.bounded()) => {
                         data.layout.break_lines(Some(a.max(0)));
                         data.layout.size().width.min(a.max(0))
                     }
@@ -1909,9 +1909,11 @@ impl Engine<'_> {
             }
         };
         data.layout.break_lines(Some(width));
-        let height = data.layout.size().height;
+        let height = data.overflow.height(&data.layout);
         if perform {
             data.layout.set_final(width, align);
+            data.overflow
+                .update(self.ts, &data.layout, &data.text, &style, width, align);
             node.rect.width = width;
             node.rect.height = height;
             if !boxes.is_empty() {
@@ -1956,7 +1958,10 @@ impl Engine<'_> {
         let NodeKind::Text(data) = &node.kind else {
             unreachable!()
         };
-        let limit = w.or(avail_w).filter(|_| wraps).map(|a| a as f32);
+        let limit = w
+            .or(avail_w)
+            .filter(|_| wraps || data.overflow.bounded())
+            .map(|a| a as f32);
         // Words don't break, so lines end short of the room by about half of one.
         let room = limit.map(|a| (a - 3.0 * average.narrow).max(average.narrow));
         let (mut widest, mut lines) = (0.0f32, 0usize);
@@ -1978,6 +1983,7 @@ impl Engine<'_> {
             Some(a) if widest > a => a as i32,
             _ => widest.ceil() as i32,
         });
+        let lines = data.overflow.lines().map_or(lines, |max| lines.min(max));
         SizeI::new(width, (lines as f32 * average.line).ceil() as i32)
     }
 

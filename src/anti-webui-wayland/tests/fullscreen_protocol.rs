@@ -22,6 +22,7 @@ struct Compositor {
     toplevel: Option<xdg_toplevel::XdgToplevel>,
     /// What the window asked to be, in order.
     asked: Vec<bool>,
+    minimum: Option<SizeI>,
 }
 
 struct NoData;
@@ -170,6 +171,9 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for Compositor {
         match request {
             xdg_toplevel::Request::SetFullscreen { output: None } => state.asked.push(true),
             xdg_toplevel::Request::UnsetFullscreen => state.asked.push(false),
+            xdg_toplevel::Request::SetMinSize { width, height } => {
+                state.minimum = Some(SizeI::new(width, height))
+            }
             _ => {}
         }
     }
@@ -294,6 +298,8 @@ fn setup(fullscreen: bool) -> World {
             app_id: "fullscreen".into(),
             width: 300,
             height: 200,
+            min_size: Some(SizeI::new(240, 160)),
+            initial_size_fraction: Some(0.85),
             fullscreen,
             ..Default::default()
         };
@@ -325,10 +331,44 @@ fn resized(width: i32, height: i32) -> WindowEvent {
 fn going_on_all_of_the_screen_goes_by_the_protocol() {
     it_can_start_there();
     the_window_goes_there_and_comes_back();
+    initial_bounds_only_limit_client_chosen_sizes();
+}
+
+fn initial_bounds_only_limit_client_chosen_sizes() {
+    let mut w = setup(false);
+    w.state
+        .toplevel
+        .as_ref()
+        .unwrap()
+        .configure_bounds(320, 240);
+    w.configure(0, 0, false);
+    assert_eq!(w.events(), [resized(272, 200)]);
+
+    // Later recommendations don't resize a window the user has already been given.
+    w.state
+        .toplevel
+        .as_ref()
+        .unwrap()
+        .configure_bounds(280, 180);
+    w.configure(0, 0, false);
+    w.configure(900, 700, false);
+    assert_eq!(w.events(), [resized(900, 700)]);
+    drop(w);
+
+    // Explicit initial allocation, including a tiling layout, takes precedence too.
+    let mut w = setup(false);
+    w.state
+        .toplevel
+        .as_ref()
+        .unwrap()
+        .configure_bounds(320, 240);
+    w.configure(900, 700, false);
+    assert_eq!(w.events(), [resized(900, 700)]);
 }
 
 fn it_can_start_there() {
     let mut w = setup(true);
+    assert_eq!(w.state.minimum, Some(SizeI::new(240, 160)));
     assert_eq!(w.state.asked, [true]);
     w.configure(1000, 800, true);
     assert_eq!(

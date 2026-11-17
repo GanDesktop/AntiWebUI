@@ -1405,6 +1405,7 @@ fn text_node(text: String) -> Node {
         text,
         version: 0,
         layout: TextLayout::default(),
+        overflow: super::TextOverflow::Visible,
         zoom: 1.0,
         in_svg: false,
         rich: None,

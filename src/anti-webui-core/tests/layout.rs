@@ -143,6 +143,87 @@ fn reactive_text_updates_layout() {
 }
 
 #[test]
+fn bounded_text_repaints_after_flex_resize_without_replacing_its_source() {
+    use anti_webui_core::scene::Primitive;
+    use anti_webui_core::tree::NodeKind;
+    use std::time::Instant;
+
+    let label = node_ref();
+    let size = signal(14.0_f32);
+    let content = "A long document filename that must remain available in full.txt";
+    let mut ui = mount((160, 150), Scale::ONE, move || {
+        div()
+            .w_full()
+            .h_full()
+            .rounded(10.0)
+            .overflow_hidden()
+            .p(12.0)
+            .child(
+                div()
+                    .flex()
+                    .w_full()
+                    .child(
+                        div().flex_1().min_w(0.0).node_ref(label).child(
+                            text(content)
+                                .ellipsis()
+                                .dyn_style(move |style| style.text_size(size.get())),
+                        ),
+                    )
+                    .child(div().w(32.0).flex_none()),
+            )
+    });
+    let narrow = ui.paint(Instant::now());
+    let mut narrow_glyphs = 0;
+    for primitive in &narrow.primitives {
+        if let Primitive::Glyphs(run) = primitive {
+            narrow_glyphs += run.glyphs.len();
+            assert_eq!(
+                run.clip.radii, [0.0; 4],
+                "window corners must not round the text clip"
+            );
+            assert!(run.clip.rect.width <= rect(label).width);
+        }
+    }
+    assert!(narrow_glyphs > 0);
+    with_doc(|document| {
+        let node = document.get(label.get().unwrap()).unwrap();
+        let text = document.get(node.children[0]).unwrap();
+        let NodeKind::Text(text) = &text.kind else {
+            panic!("plain text")
+        };
+        assert_eq!(text.text, content);
+    });
+    ui.handle_event(WindowEvent::Resized {
+        size: SizeI::new(1200, 150),
+        scale: Scale::ONE,
+    });
+    ui.update();
+    let wide = ui.paint(Instant::now());
+    let wide_glyphs: usize = wide
+        .primitives
+        .iter()
+        .filter_map(|primitive| match primitive {
+            Primitive::Glyphs(run) => Some(run.glyphs.len()),
+            _ => None,
+        })
+        .sum();
+    assert!(wide_glyphs > narrow_glyphs);
+    size.set(24.0);
+    ui.handle_event(WindowEvent::Resized {
+        size: SizeI::new(160, 150),
+        scale: Scale::ONE,
+    });
+    ui.update();
+    let larger = ui.paint(Instant::now());
+    assert!(
+        larger
+            .primitives
+            .iter()
+            .any(|primitive| matches!(primitive, Primitive::Glyphs(run) if run.size == 24.0))
+    );
+}
+
+#[test]
 fn shrink_respects_min_content() {
     let a = node_ref();
     let b = node_ref();

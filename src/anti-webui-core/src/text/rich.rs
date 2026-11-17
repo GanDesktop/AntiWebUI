@@ -275,6 +275,7 @@ impl IntoView for RichText {
             text,
             version: 0,
             layout: Default::default(),
+            overflow: super::TextOverflow::Visible,
             zoom: 1.0,
             in_svg: false,
             rich: Some(Box::new(RichData {

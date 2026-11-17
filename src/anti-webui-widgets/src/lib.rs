@@ -33,7 +33,8 @@ pub use layout::*;
 pub use long::*;
 pub use menu::{
     MenuChoice, MenuEntry, MenuItem, MenuOptions, MenuParts, MenuState, context_menu,
-    dropdown_button, menu, menu_item, menu_separator, menu_with, styled_menu, submenu,
+    dropdown_button, menu, menu_item, menu_separator, menu_with, menu_with_options, styled_menu,
+    submenu,
 };
 pub use select::*;
 pub use slider::*;

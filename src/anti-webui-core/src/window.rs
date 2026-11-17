@@ -87,6 +87,12 @@ pub struct WindowOptions {
     /// The size in logical pixels.
     pub width: i32,
     pub height: i32,
+    /// Minimum logical size requested from the compositor. Implemented on Wayland;
+    /// other backends retain their existing sizing policy.
+    pub min_size: Option<crate::geometry::SizeI>,
+    /// Caps the first client-chosen size to this fraction of the compositor's recommended
+    /// bounds, where Wayland supplies them. Explicit compositor allocations take precedence.
+    pub initial_size_fraction: Option<f32>,
     /// Keeps input from the window that opened it until it closes. A modal window is a dialog.
     pub modal: bool,
     /// The system is told it belongs to the window that opened it: it stays above it, and window
@@ -131,6 +137,8 @@ impl WindowOptions {
             title: String::new(),
             width: 640,
             height: 480,
+            min_size: None,
+            initial_size_fraction: None,
             modal: false,
             dialog: false,
             decorations: DecorationMode::Auto,
@@ -150,6 +158,23 @@ impl WindowOptions {
     pub fn size(mut self, width: i32, height: i32) -> Self {
         self.width = width;
         self.height = height;
+        self
+    }
+
+    /// Requests a minimum logical size on Wayland. Zero leaves an axis unconstrained.
+    pub fn min_size(mut self, width: i32, height: i32) -> Self {
+        self.min_size = Some(crate::geometry::SizeI::new(width.max(0), height.max(0)));
+        self
+    }
+
+    /// Uses a fraction in `(0, 1]` of Wayland's initial `configure_bounds`, if supplied.
+    /// Without those bounds, the requested size is retained.
+    pub fn initial_size_fraction(mut self, fraction: f32) -> Self {
+        assert!(
+            fraction > 0.0 && fraction <= 1.0,
+            "initial size fraction must be in (0, 1]"
+        );
+        self.initial_size_fraction = Some(fraction);
         self
     }
 

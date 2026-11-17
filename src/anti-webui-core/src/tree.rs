@@ -76,6 +76,7 @@ pub struct TextData {
     pub text: String,
     pub version: u64,
     pub layout: TextLayout,
+    pub(crate) overflow: crate::text::TextOverflow,
     /// How much bigger it is than it says, from what is around it in an `svg`.
     pub zoom: f32,
     /// It is in an `svg`, where text is painted with `fill`.

@@ -26,6 +26,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
+use unicode_segmentation::UnicodeSegmentation;
 
 #[doc(hidden)]
 pub use parley::{Affinity, Cursor, Selection as LayoutSelection};
@@ -663,6 +664,155 @@ pub struct TextLayout {
     final_break: Option<(i32, TextAlign)>,
 }
 
+/// Presentation-only shortening. The source layout remains intact for accessibility,
+/// text selection, and copying.
+#[derive(Default)]
+pub(crate) enum TextOverflow {
+    #[default]
+    Visible,
+    Ellipsis {
+        lines: usize,
+        presentation: Option<Box<ClampedLayout>>,
+    },
+}
+
+pub(crate) struct ClampedLayout {
+    key: ShapeKey,
+    width: i32,
+    align: TextAlign,
+    layout: TextLayout,
+}
+
+impl TextOverflow {
+    pub(crate) fn ellipsis(lines: usize) -> Self {
+        Self::Ellipsis {
+            lines: lines.max(1),
+            presentation: None,
+        }
+    }
+    pub(crate) fn bounded(&self) -> bool {
+        matches!(self, Self::Ellipsis { .. })
+    }
+    pub(crate) fn lines(&self) -> Option<usize> {
+        match self {
+            Self::Visible => None,
+            Self::Ellipsis { lines, .. } => Some(*lines),
+        }
+    }
+    pub(crate) fn height(&self, source: &TextLayout) -> i32 {
+        let Some(lines) = self.lines() else {
+            return source.size().height;
+        };
+        source
+            .layout
+            .lines()
+            .take(lines)
+            .last()
+            .map_or(0, |line| line.metrics().block_max_coord.ceil() as i32)
+    }
+    pub(crate) fn layout(&self) -> Option<&TextLayout> {
+        match self {
+            Self::Ellipsis {
+                presentation: Some(presentation),
+                ..
+            } => Some(&presentation.layout),
+            _ => None,
+        }
+    }
+    pub(crate) fn update(
+        &mut self,
+        ts: &mut TextSystem,
+        source: &TextLayout,
+        text: &str,
+        style: &ShapeStyle,
+        width: i32,
+        align: TextAlign,
+    ) {
+        let Self::Ellipsis {
+            lines,
+            presentation,
+        } = self
+        else {
+            return;
+        };
+        let fits = source.layout.len() <= *lines
+            && source
+                .layout
+                .lines()
+                .all(|line| line.metrics().advance <= width.max(0) as f32);
+        if fits {
+            *presentation = None;
+            return;
+        }
+        let key = source
+            .key
+            .as_ref()
+            .expect("text is shaped before its presentation");
+        if presentation
+            .as_ref()
+            .is_some_and(|old| old.key == *key && old.width == width && old.align == align)
+        {
+            return;
+        }
+
+        // Common shaped-cluster and grapheme boundaries preserve combining marks, emoji
+        // sequences, and ligatures. Parley reshapes each candidate, including bidi ordering.
+        let last = source
+            .layout
+            .lines()
+            .take(*lines)
+            .last()
+            .map_or(0, |line| line.text_range().end);
+        let clusters: HashSet<_> = source
+            .layout
+            .lines()
+            .take(*lines)
+            .flat_map(|line| {
+                line.runs()
+                    .flat_map(|run| run.clusters().map(|cluster| cluster.text_range().end))
+            })
+            .collect();
+        let mut cuts = vec![0];
+        cuts.extend(
+            text.grapheme_indices(true)
+                .map(|(start, grapheme)| start + grapheme.len())
+                .take_while(|end| *end <= last)
+                .filter(|end| clusters.contains(end)),
+        );
+        let mut candidate = TextLayout::default();
+        let mut version = 0;
+        let mut shape = |cut: usize, layout: &mut TextLayout| {
+            version += 1;
+            let mut shortened = text[..cut].trim_end().to_owned();
+            shortened.push('…');
+            layout.shape(ts, &shortened, version, style);
+            layout.break_lines(Some(width.max(0)));
+            layout.layout.len() <= *lines
+                && layout
+                    .layout
+                    .lines()
+                    .all(|line| line.metrics().advance <= width.max(0) as f32)
+        };
+        let (mut low, mut high) = (0, cuts.len());
+        while low < high {
+            let middle = low + (high - low) / 2;
+            if shape(cuts[middle], &mut candidate) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        shape(cuts[low.saturating_sub(1)], &mut candidate);
+        candidate.set_final(width.max(0), align);
+        *presentation = Some(Box::new(ClampedLayout {
+            key: key.clone(),
+            width,
+            align,
+            layout: candidate,
+        }));
+    }
+}
+
 impl TextLayout {
     /// Reshapes only if the text version or the style changed. Returns whether it reshaped.
     pub fn shape(
@@ -1024,6 +1174,70 @@ impl TextLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ellipsis_fits_shaped_text_and_reacts_to_width_and_font() {
+        let mut ts = TextSystem::new();
+        let mut style = ShapeStyle::from_computed(&ComputedStyle::default(), Scale::ONE);
+        style.wrap = false;
+        for text in [
+            "A very long filename with a suffix.txt",
+            "e\u{301}e\u{301} 👨‍👩‍👧‍👦 family document.pdf",
+            "שלום עולם מסמך ארוך מאוד.txt",
+        ] {
+            let mut source = TextLayout::default();
+            source.shape(&mut ts, text, 1, &style);
+            source.set_final(90, TextAlign::Start);
+            let original_length = source.layout.text_len();
+            let mut overflow = TextOverflow::ellipsis(1);
+            overflow.update(&mut ts, &source, text, &style, 90, TextAlign::Start);
+            let display = overflow.layout().expect("long label is ellipsized");
+            assert!(display.size().width <= 90);
+            assert_eq!(display.layout.len(), 1);
+            assert_eq!(source.layout.text_len(), original_length);
+            let retained = display.layout.text_len() - '…'.len_utf8();
+            assert!(
+                text.grapheme_indices(true)
+                    .any(|(start, _)| start == retained)
+            );
+
+            source.set_final(1200, TextAlign::Start);
+            overflow.update(&mut ts, &source, text, &style, 1200, TextAlign::Start);
+            assert!(
+                overflow.layout().is_none(),
+                "widening restores the full text"
+            );
+
+            style.size *= 2.0;
+            source.shape(&mut ts, text, 1, &style);
+            source.set_final(90, TextAlign::Start);
+            overflow.update(&mut ts, &source, text, &style, 90, TextAlign::Start);
+            assert!(overflow.layout().unwrap().size().width <= 90);
+            style.size /= 2.0;
+        }
+    }
+
+    #[test]
+    fn line_clamp_limits_height_without_changing_source_lines() {
+        let mut ts = TextSystem::new();
+        let style = ShapeStyle::from_computed(&ComputedStyle::default(), Scale::ONE);
+        let text = "第一行 first line\n第二行 second line\n第三行 third line";
+        let mut source = TextLayout::default();
+        source.shape(&mut ts, text, 1, &style);
+        source.set_final(100, TextAlign::Start);
+        let mut overflow = TextOverflow::ellipsis(2);
+        overflow.update(&mut ts, &source, text, &style, 100, TextAlign::Start);
+        assert!(source.layout.len() > 2);
+        let display = overflow.layout().expect("more than two lines");
+        assert!(display.layout.len() <= 2);
+        assert!(display.size().width <= 100);
+        assert!(overflow.height(&source) < source.size().height);
+        overflow.update(&mut ts, &source, text, &style, 1, TextAlign::Start);
+        assert!(
+            overflow.layout().is_some(),
+            "very narrow labels stay a clipped ellipsis"
+        );
+    }
 
     fn japanese() -> TextSystem {
         let mut ts = TextSystem::new();

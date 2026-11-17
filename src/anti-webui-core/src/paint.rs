@@ -1245,6 +1245,20 @@ impl Painter<'_> {
                 return;
             }
             NodeKind::Text(t) => {
+                let clip = if t.overflow.bounded() {
+                    let inherited = node.clip_shape();
+                    let rect = inherited.rect.intersect(&node.abs);
+                    Clip {
+                        rect,
+                        radii: if rect == inherited.rect {
+                            inherited.radii
+                        } else {
+                            [0.0; 4]
+                        },
+                    }
+                } else {
+                    node.clip_shape()
+                };
                 if let Some(rich) = &t.rich {
                     self.chunk(id, part::BOX);
                     self.span_backgrounds(
@@ -1261,7 +1275,7 @@ impl Painter<'_> {
                     self.chunk(id, part::SELECTION);
                     let color = fade(c.selection_color, opacity);
                     for r in t.layout.range_rects(a, b, node.abs.x, node.abs.y) {
-                        self.scene.fill(r, color, node.clip_shape());
+                        self.scene.fill(r, color, clip);
                     }
                 }
                 if let Some(row) = &t.row
@@ -1275,7 +1289,7 @@ impl Painter<'_> {
                         c.selection_color.with_alpha(c.selection_color.a * 0.5)
                     };
                     for r in t.layout.range_rects(r.start, r.end, node.abs.x, node.abs.y) {
-                        self.scene.fill(r, fade(color, opacity), node.clip_shape());
+                        self.scene.fill(r, fade(color, opacity), clip);
                     }
                 }
                 self.chunk(id, part::CONTENT);
@@ -1300,9 +1314,9 @@ impl Painter<'_> {
                         },
                     ),
                     None => self.text_layout_with(
-                        &t.layout,
+                        t.overflow.layout().unwrap_or(&t.layout),
                         node.abs.origin(),
-                        node.clip_shape(),
+                        clip,
                         ink,
                         |_| base,
                     ),

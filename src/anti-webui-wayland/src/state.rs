@@ -92,6 +92,35 @@ pub(crate) enum SurfaceRole {
     Lock(crate::lock::LockRole),
 }
 
+pub(crate) struct InitialSize {
+    fraction: f32,
+    minimum: Option<SizeI>,
+    bounds: Option<SizeI>,
+}
+impl InitialSize {
+    pub(crate) fn new(fraction: f32, minimum: Option<SizeI>) -> Self {
+        Self {
+            fraction,
+            minimum,
+            bounds: None,
+        }
+    }
+    fn fit(&self, requested: (i32, i32)) -> Option<(i32, i32)> {
+        let bounds = self.bounds?;
+        let minimum = self.minimum.unwrap_or_default();
+        Some((
+            requested
+                .0
+                .min((bounds.width as f32 * self.fraction).floor() as i32)
+                .max(minimum.width.max(1)),
+            requested
+                .1
+                .min((bounds.height as f32 * self.fraction).floor() as i32)
+                .max(minimum.height.max(1)),
+        ))
+    }
+}
+
 pub struct State {
     pub(crate) external: crate::external::External,
     pub qh: QueueHandle<State>,
@@ -115,6 +144,7 @@ pub struct State {
         Option<zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1>,
 
     pub configured: bool,
+    pub(crate) initial_size: Option<InitialSize>,
     pub logical_size: (i32, i32),
     pending_size: Option<(i32, i32)>,
     /// What the window is, and what it becomes with the next `xdg_surface.configure`.
@@ -241,6 +271,7 @@ impl State {
             data_device_manager: None,
             primary_manager: None,
             configured: false,
+            initial_size: None,
             logical_size,
             fullscreen: false,
             pending_fullscreen: None,
@@ -977,6 +1008,7 @@ impl Dispatch<xdg_surface::XdgSurface, SurfaceId> for State {
             }
             state.apply_toplevel_states();
             state.configured = true;
+            state.initial_size = None;
             state.update_size();
             state.redraw_requested = true;
         }
@@ -1006,8 +1038,18 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for State {
                 state.pending_fullscreen = Some(fullscreen);
                 if width > 0 && height > 0 {
                     state.pending_size = Some((width, height));
+                } else if width == 0 && height == 0 && !state.configured && !fullscreen {
+                    state.pending_size = state
+                        .initial_size
+                        .as_ref()
+                        .and_then(|initial| initial.fit(state.logical_size));
                 } else if state.fullscreen && !fullscreen {
                     state.pending_size = Some(state.windowed_size);
+                }
+            }
+            xdg_toplevel::Event::ConfigureBounds { width, height } => {
+                if let Some(initial) = &mut state.initial_size {
+                    initial.bounds = (width > 0 && height > 0).then_some(SizeI::new(width, height));
                 }
             }
             xdg_toplevel::Event::Close => state.events.push(WindowEvent::CloseRequested),

@@ -723,6 +723,22 @@ pub fn menu(
     styled_menu(open, on_dismiss, entries, MenuParts::new())
 }
 
+/// The standard menu with an explicit anchor or placement. The caller owns its open state,
+/// including context menus that participate in application command routing.
+pub fn menu_with_options(
+    open: impl Fn() -> bool + 'static,
+    on_dismiss: impl Fn() + 'static,
+    options: MenuOptions,
+    entries: Vec<MenuEntry>,
+) -> Show {
+    menu_with(
+        open,
+        on_dismiss,
+        options,
+        standard(Rc::new(entries), MenuParts::new()),
+    )
+}
+
 /// A menu with the standard look, with its parts changed by `parts`.
 pub fn styled_menu(
     open: impl Fn() -> bool + 'static,

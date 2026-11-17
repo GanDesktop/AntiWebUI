@@ -1421,6 +1421,7 @@ pub struct Text {
     source: TextSource,
     style: Style,
     dynamic: Vec<StyleFn>,
+    overflow: crate::text::TextOverflow,
 }
 
 /// Creates a text node. Pass a closure for reactive text: `text(move || count.get())`.
@@ -1429,10 +1430,27 @@ pub fn text(source: impl IntoTextSource) -> Text {
         source: source.into_text_source(),
         style: Style::default(),
         dynamic: Vec::new(),
+        overflow: crate::text::TextOverflow::Visible,
     }
 }
 
 impl Text {
+    /// Keeps one line within its available width, showing an end ellipsis when needed.
+    /// The complete source remains available to accessibility and copying.
+    pub fn ellipsis(mut self) -> Self {
+        self.overflow = crate::text::TextOverflow::ellipsis(1);
+        self.style.white_space = Some(anti_webui_style::WhiteSpace::Pre);
+        self
+    }
+
+    /// Wraps into at most `lines` lines, ellipsizing the last visible line. Zero is treated
+    /// as one. The containing layout must provide a bounded width.
+    pub fn line_clamp(mut self, lines: usize) -> Self {
+        self.overflow = crate::text::TextOverflow::ellipsis(lines);
+        self.style.white_space = Some(anti_webui_style::WhiteSpace::PreWrap);
+        self
+    }
+
     /// A reactive style layer, recomputed whenever the signals it reads change.
     pub fn dyn_style(mut self, f: impl Fn(Style) -> Style + 'static) -> Self {
         self.dynamic.push(Box::new(f));
@@ -1456,6 +1474,7 @@ impl IntoView for Text {
             text: initial,
             version: 0,
             layout: TextLayout::default(),
+            overflow: self.overflow,
             zoom: 1.0,
             in_svg: false,
             rich: None,

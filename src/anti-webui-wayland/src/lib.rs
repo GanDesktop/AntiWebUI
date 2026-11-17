@@ -77,6 +77,10 @@ pub struct WindowOptions {
     /// Initial size in logical pixels.
     pub width: i32,
     pub height: i32,
+    /// Minimum logical size requested with `xdg_toplevel.set_min_size`.
+    pub min_size: Option<SizeI>,
+    /// Fraction of initial `configure_bounds` used when the compositor leaves the size to us.
+    pub initial_size_fraction: Option<f32>,
     /// Whether it opens on all of the screen.
     pub fullscreen: bool,
     pub decorations: DecorationMode,
@@ -99,6 +103,8 @@ impl Default for WindowOptions {
             app_id: String::new(),
             width: 640,
             height: 480,
+            min_size: None,
+            initial_size_fraction: None,
             fullscreen: false,
             decorations: DecorationMode::Auto,
             parent: None,
@@ -804,6 +810,9 @@ fn open_instance(
             let toplevel = xdg_surface.get_toplevel(&qh, ());
             toplevel.set_title(options.title.clone());
             toplevel.set_app_id(options.app_id.clone());
+            if let Some(size) = options.min_size {
+                toplevel.set_min_size(size.width.max(0), size.height.max(0));
+            }
             if let Some(parent) = &options.parent {
                 toplevel.set_parent(Some(&parent.0));
             }
@@ -831,6 +840,9 @@ fn open_instance(
         popups,
         mailbox,
     );
+    state.initial_size = options
+        .initial_size_fraction
+        .map(|fraction| state::InitialSize::new(fraction, options.min_size));
     state.external.importer = globals.bind::<wayland_protocols::xdg::foreign::zv2::client::zxdg_importer_v2::ZxdgImporterV2, _, _>(&qh, 1..=1, ()).ok();
     state.external.activation = globals.bind::<wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1, _, _>(&qh, 1..=1, ()).ok();
     state.external.dialogs = globals
