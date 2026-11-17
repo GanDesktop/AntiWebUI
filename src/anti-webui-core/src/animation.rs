@@ -11,6 +11,10 @@ use std::time::{Duration, Instant};
 
 type FrameCallback = Box<dyn FnOnce(Instant)>;
 
+pub(crate) fn reduced_motion() -> bool {
+    crate::settings::with_settings(|settings| settings.reduce_motion)
+}
+
 thread_local! {
     static CALLBACKS: RefCell<Vec<FrameCallback>> = const { RefCell::new(Vec::new()) };
     static WANTED: Cell<bool> = const { Cell::new(false) };
@@ -207,7 +211,7 @@ impl RunningTransition {
     fn advance(&mut self, now: Instant) {
         let elapsed = now.saturating_duration_since(self.start);
         let duration = self.timing.duration;
-        if elapsed >= duration {
+        if reduced_motion() || elapsed >= duration {
             self.current = self.to.clone();
             self.progress = 1.0;
             self.finished = true;
@@ -236,7 +240,7 @@ pub(crate) struct Moving {
 impl Moving {
     fn advance(&mut self, now: Instant) {
         let elapsed = now.saturating_duration_since(self.start);
-        if elapsed >= self.timing.duration {
+        if reduced_motion() || elapsed >= self.timing.duration {
             self.current = (0.0, 0.0);
             self.finished = true;
             return;
@@ -256,6 +260,10 @@ pub(crate) struct ListPlaces {
 
 /// Has what a list change moved go there from where it is shown. Call after positioning.
 pub(crate) fn start_moves(doc: &mut Document) {
+    if reduced_motion() {
+        doc.list_places.clear();
+        return;
+    }
     let now = Instant::now();
     for places in std::mem::take(&mut doc.list_places) {
         for (id, before) in places.before {
@@ -474,7 +482,7 @@ impl<T: Animatable> Animated<T> {
     pub fn to(&self, target: T, timing: Transition) {
         let from = self.get_untracked().to_components();
         let to = target.to_components();
-        if timing.duration.is_zero() {
+        if reduced_motion() || timing.duration.is_zero() {
             self.set(target);
             return;
         }
@@ -488,6 +496,10 @@ impl<T: Animatable> Animated<T> {
 
     /// Goes from where it is to `target` like a spring, keeping the speed it has now.
     pub fn spring_to(&self, target: T, spring: Spring) {
+        if reduced_motion() {
+            self.set(target);
+            return;
+        }
         let from = self.get_untracked().to_components();
         let to = target.to_components();
         let way = from
@@ -586,20 +598,47 @@ pub fn follow<T: Animatable>(target: impl Fn() -> T + 'static, timing: impl Timi
     value
 }
 
-/// The seconds since it was made, which go on frame by frame for as long as its owner lives. For
-/// what moves all the time, like a spinner or a wave.
+/// A decorative elapsed-time signal, for a spinner or a wave. It stops requesting frames while
+/// `Settings::reduce_motion` is set, then resumes at the wall-clock elapsed time since creation.
+/// Use `set_timeout` or `request_frame` for work that must continue regardless of motion policy.
 pub fn clock() -> Signal<f32> {
-    fn tick(time: Signal<f32>, start: Instant) {
-        request_frame(move |now| {
-            if time.is_alive() {
-                time.set(now.saturating_duration_since(start).as_secs_f32());
-                tick(time, start);
-            }
-        });
+    #[derive(Clone, Copy)]
+    struct Clock {
+        time: Signal<f32>,
+        generation: Signal<u32>,
+        start: Instant,
     }
-    let time = signal(0.0f32);
-    tick(time, Instant::now());
-    time
+    impl Clock {
+        fn tick(self, generation: u32) {
+            request_frame(move |now| {
+                if self.time.is_alive()
+                    && self.generation.is_alive()
+                    && self.generation.get_untracked() == generation
+                {
+                    self.time
+                        .set(now.saturating_duration_since(self.start).as_secs_f32());
+                    self.tick(generation);
+                }
+            });
+        }
+    }
+    let clock = Clock {
+        time: signal(0.0),
+        generation: signal(0),
+        start: Instant::now(),
+    };
+    let reduced = crate::reactive::memo(|| crate::settings::settings().reduce_motion);
+    crate::reactive::effect(move || {
+        let reduced = reduced.get();
+        let generation = clock.generation.update_untracked(|generation| {
+            *generation = generation.wrapping_add(1);
+            *generation
+        });
+        if !reduced {
+            clock.tick(generation);
+        }
+    });
+    clock.time
 }
 
 impl Run {
@@ -607,6 +646,9 @@ impl Run {
     fn step(&mut self, current: [f32; 4], now: Instant) -> ([f32; 4], bool) {
         let (value, moving) = match &mut self.motion {
             Motion::None => (current, false),
+            Motion::Tween { to, .. } | Motion::Spring { to, .. } if reduced_motion() => {
+                (*to, false)
+            }
             Motion::Tween {
                 from,
                 to,
@@ -679,6 +721,42 @@ impl Run {
 mod tests {
     use super::*;
     use crate::reactive::create_root;
+
+    #[test]
+    fn reduced_motion_settles_values_and_pauses_clocks_without_pausing_work() {
+        let ((value, time, completed), owner) =
+            create_root(|| (animated(0.0_f32), clock(), signal(0)));
+        value.to(1.0, Transition::ms(1000));
+        crate::settings::update_settings(|settings| settings.reduce_motion = true);
+        let now = Instant::now();
+        request_frame(move |_| completed.update(|count| *count += 1));
+        owner.with(|| {
+            set_timeout(Duration::ZERO, move || {
+                completed.update(|count| *count += 1)
+            })
+        });
+        run_frame_callbacks(now);
+        run_timers(now + Duration::from_millis(1));
+        assert_eq!(value.get_untracked(), 1.0);
+        assert_eq!(time.get_untracked(), 0.0);
+        assert_eq!(completed.get_untracked(), 2);
+        assert!(!frame_requested());
+
+        value.spring_to(2.0, Spring::default());
+        assert_eq!(value.get_untracked(), 2.0);
+        assert!(!frame_requested());
+        crate::settings::update_settings(|settings| settings.reduce_motion = false);
+        assert!(frame_requested());
+        run_frame_callbacks(now + Duration::from_millis(50));
+        assert!(time.get_untracked() > 0.0);
+        value.spring_to(3.0, Spring::default());
+        crate::settings::update_settings(|settings| settings.reduce_motion = true);
+        run_frame_callbacks(now + Duration::from_millis(60));
+        assert_eq!(value.get_untracked(), 3.0);
+        assert!(!frame_requested());
+        owner.dispose();
+        crate::settings::update_settings(|settings| settings.reduce_motion = false);
+    }
 
     #[test]
     fn going_elsewhere_again_and_again_leaves_one_motion_going() {

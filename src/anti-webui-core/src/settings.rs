@@ -9,6 +9,9 @@ use std::thread::ThreadId;
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct Settings {
+    /// Set decorative motion immediately and pause animation clocks. Input, frame callbacks,
+    /// timers, media playback and scrolling continue normally.
+    pub reduce_motion: bool,
     pub scroll: ScrollSettings,
     pub rendering: RenderingSettings,
     pub images: ImageSettings,
@@ -87,6 +90,7 @@ pub struct KineticSettings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            reduce_motion: false,
             scroll: ScrollSettings {
                 touchpad_factor: 1.0,
                 wheel_step: 48.0,

@@ -39,6 +39,32 @@ fn computed<R>(n: NodeRef, f: impl FnOnce(&anti_webui_style::ComputedStyle) -> R
 const SOON: f32 = 0.05;
 
 #[test]
+fn reduced_motion_finishes_current_transitions_and_skips_new_ones() {
+    let open = signal(false);
+    let node = node_ref();
+    let mut ui = Ui::new(move || {
+        div()
+            .size(50.0)
+            .node_ref(node)
+            .transition(Transition::ms(1000).linear())
+            .dyn_style(move |style| style.opacity(if open.get() { 1.0 } else { 0.0 }))
+    });
+    window(&mut ui);
+    open.set(true);
+    ui.update();
+    assert!(ui.animating());
+    update_settings(|settings| settings.reduce_motion = true);
+    frame_at(&mut ui, Instant::now(), 1);
+    assert_eq!(opacity_of(node), 1.0);
+    assert!(!ui.animating());
+    open.set(false);
+    ui.update();
+    assert_eq!(opacity_of(node), 0.0);
+    assert!(!ui.animating());
+    update_settings(|settings| settings.reduce_motion = false);
+}
+
+#[test]
 fn a_change_goes_through_the_values_between() {
     let open = signal(false);
     let calls = Rc::new(Cell::new(0));

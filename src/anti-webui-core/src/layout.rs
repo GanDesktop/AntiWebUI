@@ -648,6 +648,10 @@ fn resolve_node(
 /// transitions as what it is going to changes (see `docs/design/13-animation.md`).
 fn apply_transitions(doc: &mut Document, id: NodeId, target: &mut ComputedStyle) {
     let node = &mut doc.nodes[id];
+    let reduced = crate::animation::reduced_motion();
+    if reduced {
+        node.transitions.clear();
+    }
     // What it goes from when it comes, and how long coming and going takes.
     let mut starting = None;
     let mut timing_of_presence = None;
@@ -673,7 +677,7 @@ fn apply_transitions(doc: &mut Document, id: NodeId, target: &mut ComputedStyle)
     for (i, field) in ANIMATED_FIELDS.iter().enumerate() {
         let timing = timing_of_presence
             .or_else(|| target.transition_for(field.prop))
-            .filter(|t| shown && !t.duration.is_zero());
+            .filter(|t| !reduced && shown && !t.duration.is_zero());
         if let Some(r) = node.transitions.iter().position(|r| r.field == i) {
             let to = (field.get)(target);
             let running = &mut node.transitions[r];
@@ -718,7 +722,7 @@ fn apply_move(doc: &mut Document, id: NodeId, computed: &mut ComputedStyle) {
     let Some(m) = &node.moving else {
         return;
     };
-    if m.finished {
+    if m.finished || crate::animation::reduced_motion() {
         node.moving = None;
         if node.transitions.is_empty() {
             doc.transitioning.remove(&id);

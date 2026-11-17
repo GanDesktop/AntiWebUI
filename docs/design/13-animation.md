@@ -296,4 +296,13 @@ for_each(items, key, |t| row(t).h(32.0).overflow_hidden())
 - `Auto` の高さからの動き（CSS の `interpolate-size`）。
 - キーフレーム、ループ、遅延。`animated` と `request_frame` で書ける。
 - `transition` での `Spring`。
-- `prefers-reduced-motion` に当たる設定。
+
+## Reduced motion
+
+`update_settings(|settings| settings.reduce_motion = true)` makes decorative
+changes immediate. Tween and spring values, style and presence transitions, and
+list movement settle at their target; already running motion settles on the next
+frame. `clock()` stops requesting decorative frames and resumes at wall-clock
+elapsed time when the policy is cleared. Frame callbacks, timeouts, input,
+scrolling, and media playback keep their normal behavior.
+
