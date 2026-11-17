@@ -25,8 +25,17 @@ pub(crate) trait Host {
     fn set_ime(&mut self, ime: Option<ImeState>);
     fn set_clipboard(&mut self, kind: ClipboardKind, text: String);
     fn request_paste(&mut self, kind: ClipboardKind);
-    fn external_window(&mut self, request: anti_webui_core::window::ExternalWindowRequest);
-    fn clipboard(&mut self, request: anti_webui_core::clipboard::ClipboardRequest);
+    fn external_window(&mut self, request: anti_webui_core::window::ExternalWindowRequest) {
+        anti_webui_core::window::complete_external(
+            request.id(),
+            Err(anti_webui_core::window::WindowIntegrationError::Unsupported),
+        );
+    }
+    fn clipboard(&mut self, request: anti_webui_core::clipboard::ClipboardRequest) {
+        anti_webui_core::clipboard::complete(
+            request.failed(anti_webui_core::clipboard::ClipboardError::Unsupported),
+        );
+    }
     /// Something another thread can call to wake up the event loop.
     fn waker(&self) -> Option<Arc<dyn Fn() + Send + Sync>>;
     fn set_title(&mut self, title: &str);
@@ -113,8 +122,9 @@ pub(crate) trait Host {
 
 /// Implements [`Host`] for a backend's context by calling its methods of the same names.
 macro_rules! host_for {
-    ($ctx:ty) => {
+    ($ctx:ty $(, $integration:item)*) => {
         impl Host for $ctx {
+            $($integration)*
             fn request_redraw(&mut self) {
                 self.request_redraw()
             }
@@ -132,23 +142,6 @@ macro_rules! host_for {
             }
             fn request_paste(&mut self, kind: ClipboardKind) {
                 self.request_paste(kind)
-            }
-            fn external_window(&mut self, request: anti_webui_core::window::ExternalWindowRequest) {
-                #[cfg(target_os = "linux")]
-                self.external_window(request);
-                #[cfg(not(target_os = "linux"))]
-                anti_webui_core::window::complete_external(
-                    request.id(),
-                    Err(anti_webui_core::window::WindowIntegrationError::Unsupported),
-                );
-            }
-            fn clipboard(&mut self, request: anti_webui_core::clipboard::ClipboardRequest) {
-                #[cfg(target_os = "linux")]
-                self.clipboard(request);
-                #[cfg(not(target_os = "linux"))]
-                anti_webui_core::clipboard::complete(
-                    request.failed(anti_webui_core::clipboard::ClipboardError::Unsupported),
-                );
             }
             fn waker(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
                 let waker = self.waker()?;
@@ -315,7 +308,15 @@ macro_rules! host_for {
 }
 
 #[cfg(all(target_os = "linux", feature = "wayland"))]
-host_for!(anti_webui_wayland::Ctx<'_>);
+host_for!(
+    anti_webui_wayland::Ctx<'_>,
+    fn external_window(&mut self, request: anti_webui_core::window::ExternalWindowRequest) {
+        self.external_window(request);
+    },
+    fn clipboard(&mut self, request: anti_webui_core::clipboard::ClipboardRequest) {
+        self.clipboard(request);
+    }
+);
 #[cfg(all(target_os = "linux", feature = "x11"))]
 host_for!(anti_webui_x11::Ctx<'_>);
 #[cfg(all(target_os = "macos", feature = "macos"))]

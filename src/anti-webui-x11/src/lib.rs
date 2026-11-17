@@ -5,7 +5,6 @@
 mod atoms;
 mod cursor;
 mod decor;
-mod external;
 mod ime;
 mod input;
 mod keyboard;
@@ -175,14 +174,6 @@ impl Ctx<'_> {
     }
 
     /// Asks for the selection, which comes as [`WindowEvent::Paste`].
-    pub fn external_window(&mut self, request: anti_webui_core::window::ExternalWindowRequest) {
-        self.state.external_window(request);
-    }
-
-    pub fn clipboard(&mut self, request: anti_webui_core::clipboard::ClipboardRequest) {
-        self.state.clipboard(request);
-    }
-
     pub fn request_paste(&mut self, kind: ClipboardKind) {
         self.state.request_paste(kind);
     }

@@ -1,8 +1,8 @@
-# Desktop clipboard and foreign parent windows
+# Wayland clipboard and foreign parent windows
 
 These APIs let native file managers and portal file choosers exchange data and
 associate a chooser with a window belonging to another application. They are
-available from `anti_webui::prelude::*`.
+available from `anti_webui::prelude::*` and implemented for Wayland.
 
 ## Clipboard
 
@@ -27,21 +27,16 @@ The old `set_clipboard` and text-editing copy/paste APIs remain available.
 | Backend | Binary clipboard |
 | --- | --- |
 | Wayland | Core `wl_data_device` and primary-selection protocol; no privileged data-control protocol. Reads require keyboard focus; writes also require an input serial. |
-| X11 | `TARGETS` negotiation, arbitrary format atoms, and INCR for large transfers. One outstanding conversion per selection; concurrent reads report `Busy`. |
-| macOS / Windows | New binary API reports `Unsupported`; existing text APIs are unchanged. |
+| X11 / macOS / Windows | New binary API reports `Unsupported`; existing text APIs are unchanged. |
 
-Reads enforce the caller's byte limit. Wayland pipe reads have a five-second
-transfer deadline; X11 conversions have the existing five-second inactivity
-deadline. Empty selections may be reported as an empty offer (Wayland) or
-`Unavailable` when the X server cannot convert the selection. Neither backend
-provides clipboard persistence after the application exits by itself.
+Reads enforce the caller's byte limit and a five-second transfer deadline.
+Empty selections return an empty offer. Clipboard persistence after the application
+exits requires another client to retain the selection.
 
 ## Foreign parent and activation
 
-Parse a portal identifier with `str::parse::<ExternalParent>()`:
-
-- `wayland:<exported-handle>` uses `xdg-foreign-v2`.
-- `x11:<hex-window-id>` uses `WM_TRANSIENT_FOR`.
+Parse a `wayland:<exported-handle>` portal identifier with
+`str::parse::<ExternalParent>()`. The backend uses `xdg-foreign-v2`.
 
 In the chooser's root builder, call `set_external_parent(Some(parent), modal)`.
 It replaces the current native parent. Calling it with `None` detaches and clears
@@ -50,14 +45,11 @@ toolkit's internal ownership graph. On Wayland the imported object stays alive
 until detachment, replacement, closure, or the exporter's `destroyed` event; that
 event also clears the modal state. Modal Wayland requests require `xdg-dialog`.
 If required protocols are absent, the task returns `Unsupported` and leaves the
-previous relationship intact. X11 also marks the chooser as a dialog and requests
-`_NET_WM_STATE_MODAL` as appropriate; a window manager is needed to enforce it.
+previous relationship intact.
 
 `activate_window(token)` submits an explicit launcher-provided token through
-`xdg-activation-v1` on Wayland. On X11 it writes `_NET_STARTUP_ID` and requests
-`_NET_ACTIVE_WINDOW`, using the ID's `_TIME` suffix when available. No global
-environment variable is implicitly consumed or modified. macOS and Windows
-report `Unsupported` for these new APIs.
+`xdg-activation-v1`. No global environment variable is implicitly consumed or
+modified. X11, macOS and Windows report `Unsupported` for these new APIs.
 
 A successful task means the request was submitted. A foreign handle can already
 be expired, and focus-stealing policies can deny activation. Neither API promises
@@ -66,20 +58,16 @@ that the compositor accepted a foreign handle or granted focus.
 ## Try it and validate
 
 ```sh
-cargo run -p anti-webui --example desktop_integration
-cargo run -p anti-webui --example desktop_integration -- 'wayland:EXPORTED_HANDLE' 'ACTIVATION_TOKEN'
+cargo run -p anti-webui --no-default-features --features wayland --example desktop_integration
+cargo run -p anti-webui --no-default-features --features wayland --example desktop_integration -- 'wayland:EXPORTED_HANDLE' 'ACTIVATION_TOKEN'
 cargo test -p anti-webui-core --lib
 cargo test -p anti-webui-wayland --test drag_protocol
-cargo test -p anti-webui-x11 --test server -- --test-threads=1
 ```
 
 The Wayland protocol harness checks focus restrictions, MIME offers, original
 binary bytes, read limits, foreign import lifetime, modal cleanup, and activation
-requests. The X11 server suite needs `Xvfb` on `PATH` (otherwise its existing
-harness skips): it checks cross-client 1 MB INCR transfer, format probing, limits,
-parent properties, and startup IDs. Xvfb has no window manager, so it cannot verify
-focus policy or modality. Real compositor/window-manager acceptance and window
-stacking still need desktop testing.
+requests. Real compositor acceptance, focus policy and window stacking still need
+desktop testing.
 
 Protocol references: [portal parent identifiers](https://flatpak.github.io/xdg-desktop-portal/docs/window-identifiers.html),
 [xdg-foreign-v2](https://wayland.app/protocols/xdg-foreign-unstable-v2),

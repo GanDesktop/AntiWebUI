@@ -13,7 +13,6 @@ use std::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExternalParent {
     Wayland(String),
-    X11(u32),
 }
 impl std::str::FromStr for ExternalParent {
     type Err = WindowIntegrationError;
@@ -24,16 +23,6 @@ impl std::str::FromStr for ExternalParent {
         {
             return Ok(Self::Wayland(handle.into()));
         }
-        if let Some(id) = value
-            .strip_prefix("x11:")
-            .filter(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit()))
-        {
-            if let Ok(id) = u32::from_str_radix(id, 16) {
-                if id != 0 {
-                    return Ok(Self::X11(id));
-                }
-            }
-        }
         Err(WindowIntegrationError::InvalidHandle)
     }
 }
@@ -41,7 +30,6 @@ impl std::str::FromStr for ExternalParent {
 pub enum WindowIntegrationError {
     Unsupported,
     InvalidHandle,
-    Io(String),
 }
 impl std::fmt::Display for WindowIntegrationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -99,9 +87,9 @@ pub fn set_external_parent(
 ) -> Task<Result<(), WindowIntegrationError>> {
     request(move |id| ExternalWindowRequest::Parent { id, parent, modal })
 }
-/// Requests activation with a token supplied by the launching application (xdg-activation
-/// on Wayland, startup ID on X11). It is never read implicitly from the process environment.
-/// Success does not guarantee focus: the compositor/window manager decides.
+/// Requests Wayland activation with a token supplied by the launching application.
+/// The token is never read implicitly from the process environment.
+/// Success does not guarantee focus: the compositor decides.
 pub fn activate_window(token: String) -> Task<Result<(), WindowIntegrationError>> {
     if token.is_empty() || token.contains('\0') {
         return Task::ready(Err(WindowIntegrationError::InvalidHandle));
@@ -121,14 +109,11 @@ mod tests {
     use super::*;
     #[test]
     fn portal_handles_keep_their_native_identity() {
-        assert_eq!("x11:1a2b".parse(), Ok(ExternalParent::X11(0x1a2b)));
         assert_eq!(
             "wayland:opaque-handle".parse(),
             Ok(ExternalParent::Wayland("opaque-handle".into()))
         );
-        assert!("x11:0".parse::<ExternalParent>().is_err());
-        assert!("x11:+12".parse::<ExternalParent>().is_err());
-        assert!("x11:100000000".parse::<ExternalParent>().is_err());
+        assert!("x11:1a2b".parse::<ExternalParent>().is_err());
         assert!("wayland:".parse::<ExternalParent>().is_err());
         assert!("wayland:bad\0handle".parse::<ExternalParent>().is_err());
     }

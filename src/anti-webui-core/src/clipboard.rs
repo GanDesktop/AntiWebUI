@@ -22,7 +22,6 @@ pub enum ClipboardError {
     NotFocused,
     Unavailable,
     TooLarge,
-    Busy,
     Io(String),
 }
 impl std::fmt::Display for ClipboardError {

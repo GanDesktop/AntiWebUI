@@ -51,7 +51,6 @@ impl State {
             None => None,
             Some(ExternalParent::Wayland(h)) if !h.is_empty() && !h.contains('\0') => Some(h),
             Some(ExternalParent::Wayland(_)) => return Err(WindowIntegrationError::InvalidHandle),
-            _ => return Err(WindowIntegrationError::Unsupported),
         };
         if handle.is_some()
             && (self.external.importer.is_none() || (modal && self.external.dialogs.is_none()))

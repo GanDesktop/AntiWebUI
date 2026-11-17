@@ -9,8 +9,6 @@ x11rb::atom_manager! {
         UTF8_STRING,
         _NET_SUPPORTED,
         _NET_WM_NAME,
-        _NET_STARTUP_ID,
-        _NET_ACTIVE_WINDOW,
         _NET_WM_PID,
         _NET_WM_PING,
         _NET_WM_SYNC_REQUEST,

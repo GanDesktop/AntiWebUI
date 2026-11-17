@@ -1,5 +1,5 @@
 //! `cargo run -p anti-webui --example desktop_integration -- [parent-window] [activation-token]`
-//! Supply portal-style `wayland:...` or `x11:...` handles from another application.
+//! Supply a portal-style `wayland:...` handle from another application.
 use anti_webui::prelude::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
