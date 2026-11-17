@@ -225,7 +225,15 @@ pub fn select<T: Clone + PartialEq + 'static>(
                     .and_then(|i| label_names.get(i).cloned())
                     .unwrap_or_default()
             }))
-            .child(text("▾").dyn_style(|s| s.text_color(crate::theme().text_muted)));
+            .child(
+                div()
+                    .size(6.0)
+                    .flex_none()
+                    .border_r(1.5)
+                    .border_b(1.5)
+                    .rotate(45.0)
+                    .dyn_style(|s| s.border_color(crate::theme().text_muted)),
+            );
         let list: ListOf<T> = Rc::new(move |s| {
             div()
                 .flex()
