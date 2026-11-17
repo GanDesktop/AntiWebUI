@@ -222,11 +222,11 @@ fn dispose_collect(id: ReactiveId) -> Vec<Box<dyn FnOnce()>> {
         return Vec::new();
     }
     let cleanups = take_owned(id);
-    with_rt(|rt| {
+    let node = with_rt(|rt| {
         rt.unlink_sources(id);
         let node = rt.nodes.remove(id).unwrap();
-        for o in node.observers {
-            if let Some(obs) = rt.nodes.get_mut(o) {
+        for o in &node.observers {
+            if let Some(obs) = rt.nodes.get_mut(*o) {
                 obs.sources.retain(|s| *s != id);
             }
         }
@@ -235,7 +235,10 @@ fn dispose_collect(id: ReactiveId) -> Vec<Box<dyn FnOnce()>> {
         {
             o.owned.retain(|c| *c != id);
         }
+        node
     });
+    // Values and captured closures may own scopes whose destructors re-enter the runtime.
+    drop(node);
     cleanups
 }
 
@@ -805,6 +808,25 @@ mod tests {
             assert_eq!(inner_runs.get(), 3);
         });
         owner.dispose();
+    }
+
+    #[test]
+    fn disposing_a_value_can_dispose_its_owned_scope() {
+        struct Session(Owner);
+        impl Drop for Session {
+            fn drop(&mut self) {
+                self.0.dispose();
+            }
+        }
+        let cleaned = Rc::new(Cell::new(0));
+        let cleanup = cleaned.clone();
+        let ((), child) = create_root(|| {
+            on_cleanup(move || cleanup.set(cleanup.get() + 1));
+        });
+        let (_, parent) = create_root(|| signal(Session(child)));
+        parent.dispose();
+        assert!(!child.is_alive());
+        assert_eq!(cleaned.get(), 1);
     }
 
     #[test]
