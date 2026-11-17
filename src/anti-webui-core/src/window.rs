@@ -231,6 +231,7 @@ pub enum Command {
     /// Goes through [`on_close_request`] first.
     RequestClose,
     SetTitle(String),
+    ActivateWithToken(String),
     /// A modal window it opened came (`true`) or went (`false`).
     ModalChild(bool),
     /// For a layer surface.

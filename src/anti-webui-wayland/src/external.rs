@@ -1,12 +1,13 @@
-//! Foreign toplevel handles live until they are detached or the exporting client destroys them.
+//! Native window relationships and compositor-granted activation.
 use crate::state::State;
 use anti_webui_core::{
     event::WindowEvent,
     window::{ExternalParent, ExternalWindowRequest, WindowIntegrationError},
 };
+use std::collections::HashMap;
 use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::{
-    activation::v1::client::xdg_activation_v1,
+    activation::v1::client::{xdg_activation_token_v1, xdg_activation_v1},
     dialog::v1::client::xdg_wm_dialog_v1,
     foreign::zv2::client::{zxdg_imported_v2, zxdg_importer_v2},
 };
@@ -17,25 +18,73 @@ pub(crate) struct External {
     pub activation: Option<xdg_activation_v1::XdgActivationV1>,
     pub dialogs: Option<xdg_wm_dialog_v1::XdgWmDialogV1>,
     imported: Option<zxdg_imported_v2::ZxdgImportedV2>,
+    activation_tokens: HashMap<u64, xdg_activation_token_v1::XdgActivationTokenV1>,
 }
 impl State {
     pub(crate) fn external_window(&mut self, request: ExternalWindowRequest) {
-        let id = request.id();
-        let result = match request {
-            ExternalWindowRequest::Parent { parent, modal, .. } => {
-                self.external_parent(parent, modal)
+        match request {
+            ExternalWindowRequest::Parent { id, parent, modal } => {
+                let result = self.external_parent(parent, modal);
+                self.events.push(WindowEvent::ExternalWindow { id, result });
             }
-            ExternalWindowRequest::Activate { token, .. } => match &self.external.activation {
-                Some(activation)
-                    if self.toplevel().is_some() && !token.is_empty() && !token.contains('\0') =>
-                {
-                    activation.activate(token, &self.surface);
-                    Ok(())
+            ExternalWindowRequest::Activate { id, token } => {
+                let result = self.activate_with_token(token);
+                self.events.push(WindowEvent::ExternalWindow { id, result });
+            }
+            ExternalWindowRequest::ActivationToken { id } => {
+                if let Err(error) = self.request_activation_token(id) {
+                    self.events.push(WindowEvent::ActivationToken {
+                        id,
+                        result: Err(error),
+                    });
                 }
-                _ => Err(WindowIntegrationError::Unsupported),
-            },
-        };
-        self.events.push(WindowEvent::ExternalWindow { id, result });
+            }
+            ExternalWindowRequest::ActivateWithToken(token) => {
+                // The request came from another live window and carries a compositor token.
+                // The requesting window only observes whether routing succeeded.
+                let _submitted = self.activate_with_token(token);
+            }
+        }
+    }
+
+    fn activate_with_token(&self, token: String) -> Result<(), WindowIntegrationError> {
+        let activation = self
+            .external
+            .activation
+            .as_ref()
+            .filter(|_| self.toplevel().is_some())
+            .ok_or(WindowIntegrationError::Unsupported)?;
+        if token.is_empty() || token.contains('\0') {
+            return Err(WindowIntegrationError::InvalidHandle);
+        }
+        activation.activate(token, &self.surface);
+        Ok(())
+    }
+
+    fn request_activation_token(&mut self, id: u64) -> Result<(), WindowIntegrationError> {
+        let activation = self
+            .external
+            .activation
+            .as_ref()
+            .filter(|_| self.toplevel().is_some())
+            .ok_or(WindowIntegrationError::Unsupported)?;
+        let seat = self
+            .seat
+            .as_ref()
+            .filter(|_| self.press_serial != 0)
+            .ok_or(WindowIntegrationError::InvalidHandle)?;
+        let token = activation.get_activation_token(&self.qh, id);
+        token.set_serial(self.press_serial, seat);
+        token.set_surface(&self.surface);
+        token.commit();
+        self.external.activation_tokens.insert(id, token);
+        Ok(())
+    }
+
+    pub(crate) fn destroy_activation_tokens(&mut self) {
+        for (_, token) in self.external.activation_tokens.drain() {
+            token.destroy();
+        }
     }
 
     fn external_parent(
@@ -89,6 +138,31 @@ impl State {
         if let Some(dialog) = self.decor.dialog.take() {
             dialog.unset_modal();
             dialog.destroy();
+        }
+    }
+}
+
+impl Dispatch<xdg_activation_token_v1::XdgActivationTokenV1, u64> for State {
+    fn event(
+        state: &mut Self,
+        request: &xdg_activation_token_v1::XdgActivationTokenV1,
+        event: xdg_activation_token_v1::Event,
+        id: &u64,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_activation_token_v1::Event::Done { token } = event
+            && state.external.activation_tokens.remove(id).is_some()
+        {
+            request.destroy();
+            let result = if token.is_empty() {
+                Err(WindowIntegrationError::InvalidHandle)
+            } else {
+                Ok(token)
+            };
+            state
+                .events
+                .push(WindowEvent::ActivationToken { id: *id, result });
         }
     }
 }

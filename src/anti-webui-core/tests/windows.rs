@@ -211,6 +211,68 @@ fn a_handle_sends_to_its_window_and_closing_closes_what_it_opened() {
 }
 
 #[test]
+fn an_activation_token_is_requested_in_the_source_and_forwarded_to_the_target() {
+    use anti_webui_core::window::ExternalWindowRequest;
+
+    let result = Rc::new(Cell::new(None));
+    let completed = result.clone();
+    let mut source = Ui::new(move || {
+        let other = open_window(WindowOptions::new(), div);
+        div().w(60.0).h(40.0).on_click(move |_| {
+            let completed = completed.clone();
+            other
+                .request_activation()
+                .then(move |outcome| completed.set(Some(outcome)));
+        })
+    });
+    show(&mut source);
+    let mut target = open_asked();
+    press(&mut source, 5.0, 5.0);
+    let id = source
+        .take_requests()
+        .into_iter()
+        .find_map(|request| match request {
+            PlatformRequest::ExternalWindow(ExternalWindowRequest::ActivationToken { id }) => {
+                Some(id)
+            }
+            _ => None,
+        })
+        .expect("source requests an activation token");
+    assert!(take_commands().is_empty(), "the target waits for the token");
+    assert!(
+        !target
+            .take_requests()
+            .iter()
+            .any(|request| matches!(request, PlatformRequest::ExternalWindow(_))),
+        "the target has no token request"
+    );
+
+    source.handle_event(WindowEvent::ActivationToken {
+        id,
+        result: Ok("seat-token".into()),
+    });
+    source.poll_images();
+    let mut commands = take_commands();
+    assert_eq!(
+        commands,
+        vec![(
+            target.window(),
+            Command::ActivateWithToken("seat-token".into())
+        )]
+    );
+    let (_, command) = commands.pop().expect("one target command");
+    target.apply(command);
+    assert_eq!(
+        target.take_requests(),
+        [PlatformRequest::ExternalWindow(
+            ExternalWindowRequest::ActivateWithToken("seat-token".into())
+        )],
+    );
+    source.poll_images();
+    assert_eq!(result.take(), Some(Ok(())));
+}
+
+#[test]
 fn a_node_ref_works_from_the_handlers_of_another_window() {
     let target = node_ref();
     let mut a = Ui::new(move || {

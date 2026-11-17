@@ -26,10 +26,7 @@ pub(crate) trait Host {
     fn set_clipboard(&mut self, kind: ClipboardKind, text: String);
     fn request_paste(&mut self, kind: ClipboardKind);
     fn external_window(&mut self, request: anti_webui_core::window::ExternalWindowRequest) {
-        anti_webui_core::window::complete_external(
-            request.id(),
-            Err(anti_webui_core::window::WindowIntegrationError::Unsupported),
-        );
+        request.unsupported();
     }
     fn clipboard(&mut self, request: anti_webui_core::clipboard::ClipboardRequest) {
         anti_webui_core::clipboard::complete(

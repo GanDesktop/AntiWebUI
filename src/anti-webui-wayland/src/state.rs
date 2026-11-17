@@ -232,6 +232,7 @@ pub struct State {
 impl Drop for State {
     fn drop(&mut self) {
         self.detach_external();
+        self.destroy_activation_tokens();
         // Not to leave a grab in the way of the other windows, if it goes without closing them.
         self.connection_popups.lock().destroy_all(&self.mailbox);
     }

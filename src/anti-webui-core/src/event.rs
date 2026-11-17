@@ -265,6 +265,10 @@ pub enum WindowEvent {
         id: u64,
         result: Result<(), crate::window::WindowIntegrationError>,
     },
+    ActivationToken {
+        id: u64,
+        result: Result<String, crate::window::WindowIntegrationError>,
+    },
     Clipboard(crate::clipboard::ClipboardReply),
     /// The buffer size or the scale changed.
     Resized {

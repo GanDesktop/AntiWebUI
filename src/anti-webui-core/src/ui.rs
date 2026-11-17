@@ -188,6 +188,11 @@ impl Ui {
             Command::Close => with_doc(|d| d.request(PlatformRequest::Close)),
             Command::RequestClose => crate::window::request_close_window(),
             Command::SetTitle(title) => crate::window::set_window_title(title),
+            Command::ActivateWithToken(token) => with_doc(|d| {
+                d.request(PlatformRequest::ExternalWindow(
+                    crate::window::ExternalWindowRequest::ActivateWithToken(token),
+                ));
+            }),
             Command::Layer(change) => with_doc(|d| d.request(PlatformRequest::Layer(change))),
             Command::ModalChild(opened) => {
                 let was = crate::window::blocked();
@@ -899,6 +904,9 @@ impl Ui {
             WindowEvent::Clipboard(reply) => crate::clipboard::complete(reply),
             WindowEvent::ExternalWindow { id, result } => {
                 crate::window::complete_external(id, result)
+            }
+            WindowEvent::ActivationToken { id, result } => {
+                crate::window::complete_activation_token(id, result)
             }
             WindowEvent::Focused(focused) => {
                 crate::window::tell_active(focused);

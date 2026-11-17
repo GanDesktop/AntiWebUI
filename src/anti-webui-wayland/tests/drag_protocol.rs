@@ -48,6 +48,10 @@ struct Compositor {
     imports_destroyed: usize,
     modal: bool,
     tokens: Vec<String>,
+    activation_surfaces: Vec<wl_surface::WlSurface>,
+    activation_origin: Option<wl_surface::WlSurface>,
+    activation_serial: Option<(u32, wl_seat::WlSeat)>,
+    activation_grant_destroyed: bool,
     surfaces: Vec<wl_surface::WlSurface>,
     pointer: Option<wl_pointer::WlPointer>,
     device: Option<wl_data_device::WlDataDevice>,
@@ -135,7 +139,6 @@ macro_rules! ignored {
 
 ignored!(
     wl_keyboard::WlKeyboard,
-    xdg_activation_token_v1::XdgActivationTokenV1,
     xdg_toplevel::XdgToplevel,
     wl_pointer::WlPointer,
     wl_callback::WlCallback,
@@ -509,6 +512,24 @@ fn setup() -> World {
         std::env::set_var("WAYLAND_DISPLAY", &path);
         std::env::remove_var("WAYLAND_SOCKET");
     }
+    let (commands, events, supports) = start_client();
+    World {
+        display,
+        socket,
+        state: Compositor::default(),
+        client: None,
+        commands,
+        events,
+        supports,
+        serial: 100,
+    }
+}
+
+fn start_client() -> (
+    mpsc::Sender<Command>,
+    mpsc::Receiver<WindowEvent>,
+    mpsc::Receiver<bool>,
+) {
     let (commands, command_rx) = mpsc::channel();
     let (event_tx, events) = mpsc::channel();
     let (supports_tx, supports) = mpsc::channel();
@@ -528,16 +549,7 @@ fn setup() -> World {
         };
         run(options, client).unwrap();
     });
-    World {
-        display,
-        socket,
-        state: Compositor::default(),
-        client: None,
-        commands,
-        events,
-        supports,
-        serial: 100,
-    }
+    (commands, events, supports)
 }
 
 fn offer_of(mimes: &[&str], actions: DragActions) -> DragOffer {
@@ -784,6 +796,7 @@ fn drag_clipboard_and_foreign_windows_go_by_the_protocol() {
     pinching_says_how_much_bigger_it_got(&mut w);
 
     clipboard_and_external(&mut w);
+    activation_reaches_another_connection(&mut w);
     w.commands.send(Command::Exit).unwrap();
 }
 
@@ -877,10 +890,33 @@ impl Dispatch<xdg_activation_v1::XdgActivationV1, ()> for Compositor {
         init: &mut DataInit<'_, Self>,
     ) {
         match req {
-            xdg_activation_v1::Request::Activate { token, .. } => state.tokens.push(token),
+            xdg_activation_v1::Request::Activate { token, surface } => {
+                state.tokens.push(token);
+                state.activation_surfaces.push(surface);
+            }
             xdg_activation_v1::Request::GetActivationToken { id } => {
                 init.init(id, ());
             }
+            _ => {}
+        }
+    }
+}
+impl Dispatch<xdg_activation_token_v1::XdgActivationTokenV1, ()> for Compositor {
+    fn request(
+        state: &mut Self,
+        _: &Client,
+        grant: &xdg_activation_token_v1::XdgActivationTokenV1,
+        request: xdg_activation_token_v1::Request,
+        _: &(),
+        _: &DisplayHandle,
+        _: &mut DataInit<'_, Self>,
+    ) {
+        use xdg_activation_token_v1::Request;
+        match request {
+            Request::SetSerial { serial, seat } => state.activation_serial = Some((serial, seat)),
+            Request::SetSurface { surface } => state.activation_origin = Some(surface),
+            Request::Commit => grant.done("seat-token".into()),
+            Request::Destroy => state.activation_grant_destroyed = true,
             _ => {}
         }
     }
@@ -1209,4 +1245,61 @@ fn clipboard_and_external(w: &mut World) {
         .unwrap();
     w.external_ok();
     w.until("detach", |w| w.state.imports_destroyed == 2);
+}
+
+fn activation_reaches_another_connection(w: &mut World) {
+    let serial = w.press();
+    let source = w.state.surfaces[0].clone();
+    w.commands
+        .send(Command::External(ExternalWindowRequest::ActivationToken {
+            id: 14,
+        }))
+        .unwrap();
+    let mut grant = None;
+    w.until("activation token", |world| {
+        grant = world.events.try_iter().find_map(|event| match event {
+            WindowEvent::ActivationToken { id: 14, result } => Some(result),
+            _ => None,
+        });
+        grant.is_some()
+    });
+    let token = grant
+        .expect("activation protocol completed")
+        .expect("a valid activation grant");
+    assert_eq!(w.state.activation_origin.as_ref(), Some(&source));
+    let (reported_serial, seat) = w
+        .state
+        .activation_serial
+        .as_ref()
+        .expect("source seat serial");
+    assert_eq!(*reported_serial, serial);
+    assert_eq!(
+        seat.client().map(|client| client.id()),
+        source.client().map(|client| client.id())
+    );
+    w.until("token object destroyed", |world| {
+        world.state.activation_grant_destroyed
+    });
+
+    let old_surfaces = w.state.surfaces.len();
+    let (target_commands, _events, _supports) = start_client();
+    w.until("target surface on a second connection", |world| {
+        world.state.surfaces.len() > old_surfaces
+    });
+    let target = w.state.surfaces[old_surfaces].clone();
+    assert_ne!(
+        source.client().map(|client| client.id()),
+        target.client().map(|client| client.id())
+    );
+    target_commands
+        .send(Command::External(ExternalWindowRequest::ActivateWithToken(
+            token,
+        )))
+        .unwrap();
+    w.until("new activation received", |world| {
+        world.state.tokens.len() == 2
+    });
+    assert_eq!(w.state.tokens, ["startup-token", "seat-token"]);
+    assert_eq!(w.state.activation_surfaces, [source, target]);
+    target_commands.send(Command::Exit).unwrap();
 }
