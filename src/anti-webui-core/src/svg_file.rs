@@ -3,17 +3,19 @@
 //! as text in its place. See `docs/design/25-svg.md`.
 
 use crate::geometry::Affine;
+use crate::scene::PathGeometry;
 use crate::svg::{Group, Svg, TextAnchor, TextBaseline, group, path, rect, svg, text};
 use crate::view::{IntoView, View};
 use anti_webui_style::{
     Color, FillRule, FontFamily, FontWeight, Gradient, GradientShape, GradientSpread,
-    GradientUnits, Length, LineCap, LineHeight, LineJoin, Styled, SvgPaint, TextAlign,
+    GradientUnits, Length, LineCap, LineHeight, LineJoin, Style, Styled, SvgPaint, TextAlign,
 };
 use kurbo::BezPath;
 use resvg::usvg::{self, Node as N, roxmltree};
 use std::str::FromStr;
+use std::sync::Arc;
 #[cfg(feature = "svg-text")]
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 const LABEL_ID: &str = "__anti_webui_label_";
 
@@ -60,6 +62,82 @@ pub fn parse(data: &[u8]) -> Result<Svg, String> {
         )
         .children(placed)
     })
+}
+
+/// A reusable SVG icon. Its shapes share geometry and follow the surrounding text color.
+pub struct MonochromeSvg {
+    size: (f32, f32),
+    shapes: Vec<MonochromeShape>,
+}
+
+struct MonochromeShape {
+    geometry: Arc<PathGeometry>,
+    transform: Affine,
+    style: Style,
+}
+
+impl MonochromeSvg {
+    /// Imports standalone vector artwork with solid paints, replacing them with `currentColor`.
+    /// The icon may contain paths, basic shapes and transformed groups. Masks, clips, filters,
+    /// group transparency and embedded text or images require the full [`parse`] API.
+    pub fn parse(data: &[u8]) -> Result<Self, String> {
+        fn solid(paint: &usvg::Paint) -> bool {
+            matches!(paint, usvg::Paint::Color(_))
+        }
+
+        fn collect(g: &usvg::Group, shapes: &mut Vec<MonochromeShape>) -> Result<(), String> {
+            let unsupported = || "unsupported shape or paint in a monochrome SVG".to_string();
+            if g.clip_path().is_some()
+                || g.mask().is_some()
+                || !g.filters().is_empty()
+                || g.opacity().get() != 1.0
+                || g.blend_mode() != usvg::BlendMode::Normal
+            {
+                return Err(unsupported());
+            }
+            for node in g.children() {
+                match node {
+                    N::Group(g) => collect(g, shapes)?,
+                    N::Path(p) if !p.is_visible() => {}
+                    N::Path(p)
+                        if p.fill().is_none_or(|fill| solid(fill.paint()))
+                            && p.stroke().is_none_or(|stroke| solid(stroke.paint())) =>
+                    {
+                        shapes.push(MonochromeShape {
+                            geometry: PathGeometry::new(path_geometry(p)),
+                            transform: transform_of(p.abs_transform()),
+                            style: style_path(Style::default(), p, |_| SvgPaint::CurrentColor),
+                        });
+                    }
+                    _ => return Err(unsupported()),
+                }
+            }
+            Ok(())
+        }
+
+        let tree = usvg::Tree::from_data(data, &options_for(data)).map_err(|e| e.to_string())?;
+        let mut shapes = Vec::new();
+        collect(tree.root(), &mut shapes)?;
+        let size = tree.size();
+        Ok(Self {
+            size: (size.width(), size.height()),
+            shapes,
+        })
+    }
+
+    /// Builds a view from the imported artwork without parsing or allocating its paths again.
+    pub fn view(&self) -> Svg {
+        let (width, height) = self.size;
+        svg()
+            .view_box(0.0, 0.0, width, height)
+            .w(width)
+            .h(height)
+            .children(self.shapes.iter().map(|shape| {
+                let mut view = path(shape.geometry.clone()).transform(shape.transform);
+                *view.style_mut() = shape.style.clone();
+                view
+            }))
+    }
 }
 
 /// What `usvg` reads a file with: the fonts of the system when it has text, which few pictures do.
@@ -307,6 +385,10 @@ fn parsed_path(p: &usvg::Path) -> View {
 }
 
 fn parsed_path_shape(p: &usvg::Path) -> crate::svg::Shape {
+    style_path(path(path_geometry(p)), p, paint_of)
+}
+
+fn path_geometry(p: &usvg::Path) -> BezPath {
     use usvg::tiny_skia_path::PathSegment as S;
     let mut curves = BezPath::new();
     for segment in p.data().segments() {
@@ -322,10 +404,17 @@ fn parsed_path_shape(p: &usvg::Path) -> crate::svg::Shape {
             S::Close => curves.close_path(),
         }
     }
-    let mut shape = path(curves);
+    curves
+}
+
+fn style_path<S: Styled>(
+    mut shape: S,
+    p: &usvg::Path,
+    paint: impl Fn(&usvg::Paint) -> SvgPaint,
+) -> S {
     shape = match p.fill() {
         Some(f) => shape
-            .fill(paint_of(f.paint()))
+            .fill(paint(f.paint()))
             .fill_opacity(f.opacity().get())
             .fill_rule(match f.rule() {
                 usvg::FillRule::NonZero => FillRule::NonZero,
@@ -335,7 +424,7 @@ fn parsed_path_shape(p: &usvg::Path) -> crate::svg::Shape {
     };
     if let Some(s) = p.stroke() {
         shape = shape
-            .stroke(paint_of(s.paint()))
+            .stroke(paint(s.paint()))
             .stroke_opacity(s.opacity().get())
             .stroke_width(s.width().get())
             .miter_limit(s.miterlimit().get())

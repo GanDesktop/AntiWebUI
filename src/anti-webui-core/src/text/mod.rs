@@ -12,8 +12,8 @@ pub mod selection;
 use crate::geometry::{RectI, Scale, SizeI};
 use crate::tree::{Document, with_doc};
 use anti_webui_style::{
-    ComputedStyle, FontAxes, FontAxis, FontFamily, FontStyle, FontWeight, LineHeight, TextAlign,
-    WhiteSpace,
+    ComputedStyle, FontAxes, FontAxis, FontFamily, FontStyle, FontWeight, LineHeight, OverflowWrap,
+    TextAlign, WhiteSpace,
 };
 use icu_properties::props::Script as IcuScript;
 use icu_properties::{CodePointMapData, PropertyNamesShort};
@@ -474,6 +474,7 @@ pub struct ShapeStyle {
     pub line_height: Option<i32>,
     pub letter_spacing: f32,
     pub wrap: bool,
+    pub overflow_wrap: OverflowWrap,
 }
 
 /// How far below `dominant-baseline: central` and `middle` the baseline of a font is. It goes by the
@@ -590,6 +591,7 @@ impl ShapeStyle {
             line_height,
             letter_spacing: scale.pxf(style.letter_spacing),
             wrap: style.white_space == WhiteSpace::PreWrap,
+            overflow_wrap: style.overflow_wrap,
         }
     }
 }
@@ -900,6 +902,9 @@ impl TextLayout {
         builder.push_default(StyleProperty::Brush(0));
         if !style.wrap {
             builder.push_default(StyleProperty::TextWrapMode(TextWrapMode::NoWrap));
+        }
+        if style.overflow_wrap == OverflowWrap::Anywhere {
+            builder.push_default(StyleProperty::OverflowWrap(parley::OverflowWrap::Anywhere));
         }
         if let Some(rich) = rich {
             let mut index = 0;
@@ -1239,6 +1244,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn overflow_wrap_lets_long_words_fill_the_clamped_lines() {
+        let mut ts = TextSystem::new();
+        let style = ShapeStyle::from_computed(
+            &ComputedStyle {
+                overflow_wrap: OverflowWrap::Anywhere,
+                ..Default::default()
+            },
+            Scale::ONE,
+        );
+        let text = "07ecaf88530fec0fdedf70aafcf3f980592750000000000000000.jpg";
+        let mut source = TextLayout::default();
+        source.shape(&mut ts, text, 1, &style);
+        source.set_final(85, TextAlign::Center);
+        let mut overflow = TextOverflow::ellipsis(2);
+        overflow.update(&mut ts, &source, text, &style, 85, TextAlign::Center);
+        let display = overflow
+            .layout()
+            .expect("a long filename should be clamped");
+        assert_eq!(display.layout.len(), 2);
+        assert!(display.size().width <= 85);
+    }
+
     fn japanese() -> TextSystem {
         let mut ts = TextSystem::new();
         ts.locale = parley::Language::parse("ja-JP").ok();
@@ -1274,6 +1302,7 @@ mod tests {
             line_height: None,
             letter_spacing: 0.0,
             wrap: true,
+            overflow_wrap: OverflowWrap::Normal,
         };
         TextLayout::default().shape(&mut ts, "ไทย", 1, &style);
         assert!(ts.prepared.contains(&IcuScript::Thai));

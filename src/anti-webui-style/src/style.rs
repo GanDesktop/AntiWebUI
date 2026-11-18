@@ -205,6 +205,7 @@ define_style! {
     letter_spacing: f32 = 0.0, inherited;
     text_align: TextAlign = TextAlign::Start, inherited;
     white_space: WhiteSpace = WhiteSpace::PreWrap, inherited;
+    overflow_wrap: OverflowWrap = OverflowWrap::Normal, inherited;
     underline: bool = false, inherited;
     strikethrough: bool = false, inherited;
     /// The first is on top. See `docs/design/04-text.md`. Shared, as what every node under one

@@ -4,6 +4,7 @@ use anti_webui_core::Ui;
 use anti_webui_core::damage;
 use anti_webui_core::event::*;
 use anti_webui_core::geometry::{PointF, RectI, Scale, SizeI};
+use anti_webui_core::images::Bitmap;
 use anti_webui_core::prelude::*;
 use anti_webui_core::scene::{ImageDraw, Primitive, Scene};
 use anti_webui_core::tree::with_doc;
@@ -11,6 +12,7 @@ use image::codecs::gif::GifEncoder;
 use image::{Delay, Frame, ImageEncoder, RgbaImage, codecs::png::PngEncoder};
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn mount_at<V: IntoView>(scale: Scale, f: impl FnOnce() -> V) -> Ui {
@@ -679,6 +681,30 @@ fn object_fit_puts_the_picture_where_css_says() {
     assert_eq!(at(ObjectFit::None, end), RectI::new(-280, -240, 400, 300));
     let offset = (px(-20.0), px(-30.0));
     assert_eq!(at(ObjectFit::None, offset), RectI::new(-20, -30, 400, 300));
+}
+
+#[test]
+fn a_raw_bitmap_keeps_the_proportions_of_its_current_pixels() {
+    let raw = |width: u32, height: u32| {
+        Arc::new(Bitmap::from_premultiplied(
+            width,
+            height,
+            vec![255; (width * height * 4) as usize],
+            true,
+        ))
+    };
+    let image = signal(raw(80, 40));
+    let mut ui = mount(|| {
+        div().child(
+            bitmap_view(move || Some(image.get()))
+                .size(120.0_f32)
+                .object_fit(ObjectFit::Contain),
+        )
+    });
+    assert_eq!(the_picture(&mut ui).rect, RectI::new(0, 30, 120, 60));
+    image.set(raw(40, 80));
+    ui.update();
+    assert_eq!(the_picture(&mut ui).rect, RectI::new(30, 0, 60, 120));
 }
 
 #[test]

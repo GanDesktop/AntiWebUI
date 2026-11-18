@@ -433,6 +433,14 @@ pub enum WhiteSpace {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum OverflowWrap {
+    #[default]
+    Normal,
+    /// Break otherwise unbreakable text when a whole word cannot fit on a line.
+    Anywhere,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum FontStyle {
     #[default]
     Normal,

@@ -1136,7 +1136,7 @@ impl IntoView for Img {
     }
 }
 
-/// Pixels the program made itself, filling the content box. See [`bitmap_view`].
+/// Pixels the program made itself. See [`bitmap_view`].
 pub struct BitmapView {
     cfg: ElementConfig,
     bitmap: Box<dyn Fn() -> Option<Arc<Bitmap>>>,
@@ -1158,9 +1158,9 @@ pub fn set_clipboard(kind: ClipboardKind, text: impl Into<String>) {
     with_doc(|d| d.request(PlatformRequest::SetClipboard { kind, text }));
 }
 
-/// Shows pixels the program made, as they are, without decoding, scaling or caching anything: no
-/// bitmap shows nothing. `bitmap` runs again when the signals it reads change, and a new bitmap
-/// shows from the next frame. The size of the box is up to the style.
+/// Shows pixels the program made without decoding or caching. `bitmap` runs again when the
+/// signals it reads change, and a new bitmap shows from the next frame. The bitmap's dimensions
+/// supply its intrinsic size and aspect ratio for `object_fit`.
 pub fn bitmap_view(bitmap: impl Fn() -> Option<Arc<Bitmap>> + 'static) -> BitmapView {
     BitmapView {
         cfg: ElementConfig::default(),
@@ -1192,8 +1192,17 @@ impl IntoView for BitmapView {
             let bitmap = bitmap();
             with_doc(|d| {
                 if let Some(NodeKind::Image(data)) = d.get_mut(id).map(|n| &mut n.kind) {
+                    let natural = bitmap
+                        .as_ref()
+                        .map(|bitmap| (bitmap.width() as f32, bitmap.height() as f32));
+                    let resized = data.natural != natural;
+                    data.natural = natural;
                     data.fallback = bitmap;
-                    d.mark_paint();
+                    if resized {
+                        d.invalidate_layout(id);
+                    } else {
+                        d.mark_paint();
+                    }
                 }
             });
         });

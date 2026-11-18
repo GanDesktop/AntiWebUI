@@ -18,10 +18,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 #[cfg(feature = "svg")]
-pub use crate::svg_file::parse;
-#[cfg(feature = "svg")]
 #[doc(hidden)]
 pub use crate::svg_file::prepare_fonts_for;
+#[cfg(feature = "svg")]
+pub use crate::svg_file::{MonochromeSvg, parse};
 
 pub use crate::geometry::Affine as Transform;
 #[doc(hidden)]
@@ -363,6 +363,7 @@ impl IntoGeometry for String {
 
 pub enum PathSource {
     Static(BezPath),
+    Shared(Arc<PathGeometry>),
     Dynamic(Box<dyn Fn() -> BezPath>),
 }
 
@@ -374,6 +375,12 @@ pub trait IntoPathSource {
 impl IntoPathSource for BezPath {
     fn into_path_source(self) -> PathSource {
         PathSource::Static(self)
+    }
+}
+
+impl IntoPathSource for Arc<PathGeometry> {
+    fn into_path_source(self) -> PathSource {
+        PathSource::Shared(self)
     }
 }
 
@@ -651,6 +658,7 @@ impl IntoView for Shape {
     fn into_view(self) -> View {
         let (geometry, dynamic) = match self.source {
             PathSource::Static(p) => (PathGeometry::new(p), None),
+            PathSource::Shared(p) => (p, None),
             PathSource::Dynamic(f) => (PathGeometry::new(BezPath::new()), Some(f)),
         };
         let data = ShapeData {

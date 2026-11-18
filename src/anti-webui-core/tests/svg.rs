@@ -34,6 +34,31 @@ fn paths(ui: &mut Ui) -> Vec<anti_webui_core::scene::PathDraw> {
         .collect()
 }
 
+#[cfg(feature = "svg")]
+#[test]
+fn imported_monochrome_icons_share_geometry_and_inherit_their_own_colors() {
+    use anti_webui_core::{scene::PathPaint, svg::MonochromeSvg};
+
+    let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+        <path d="M4 4h16v16H4z" fill="none" stroke="#123456" stroke-width="2" />
+    </svg>"##;
+    let icon = MonochromeSvg::parse(svg).unwrap();
+    let red = rgb(0xcc0033);
+    let blue = rgb(0x0033cc);
+    let mut ui = mount((800, 600), ONE, || {
+        div()
+            .child(div().text_color(red).child(icon.view()))
+            .child(div().text_color(blue).child(icon.view()))
+    });
+    let drawn = paths(&mut ui);
+    let [a, b] = drawn.as_slice() else {
+        panic!("expected one outline per icon");
+    };
+    assert_eq!(a.paint, PathPaint::Color(red));
+    assert_eq!(b.paint, PathPaint::Color(blue));
+    assert_eq!(a.geometry.id(), b.geometry.id());
+}
+
 fn size_of(view: impl FnOnce(NodeRef) -> View, parent: impl FnOnce(View) -> Div) -> (i32, i32) {
     let r = node_ref();
     let _ui = mount((800, 600), ONE, || parent(view(r)));

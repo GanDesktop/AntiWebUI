@@ -248,6 +248,7 @@ pub trait Styled: Sized {
         underline => underline = true;
         strikethrough => strikethrough = true;
         whitespace_nowrap => white_space = WhiteSpace::Pre;
+        overflow_wrap_anywhere => overflow_wrap = OverflowWrap::Anywhere;
         select_none => user_select = UserSelect::None;
         select_text => user_select = UserSelect::Text;
         pointer_events_none => pointer_events = false;

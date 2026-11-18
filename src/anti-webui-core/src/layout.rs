@@ -290,6 +290,7 @@ fn same_layout(a: &ComputedStyle, b: &ComputedStyle) -> bool {
         && a.letter_spacing == b.letter_spacing
         && a.text_align == b.text_align
         && a.white_space == b.white_space
+        && a.overflow_wrap == b.overflow_wrap
         && a.content_visibility == b.content_visibility
         && a.contain_intrinsic_width == b.contain_intrinsic_width
         && a.contain_intrinsic_height == b.contain_intrinsic_height
